@@ -1540,7 +1540,7 @@ FindDialog::FindDialog(RideEditor *rideEditor, QWidget *parent) : QDialog(parent
     resultsTable->setColumnHidden(3, true);
     resultsTable->setSortingEnabled(true);
     QStringList header;
-    header << "Time" << "Column" << "Value";
+    header << tr("Time") << tr("Column") << tr("Value");
     resultsTable->setHorizontalHeaderLabels(header);
     resultsTable->verticalHeader()->hide();
     resultsTable->setShowGrid(false);
