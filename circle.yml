@@ -1,0 +1,4 @@
+dependencies:
+  pre:
+    - sudo aptitude update; sudo aptitude install libqt4-dev
+    - sudo aptitude install git
