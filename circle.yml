@@ -1,4 +1,8 @@
 dependencies:
   pre:
-    - sudo aptitude update; sudo aptitude install libqt4-dev
-    - sudo aptitude install git
+    - scritps/circle/dependencies_pre.sh
+
+test:
+  pre:
+    - qmake
+    - make
