@@ -2,7 +2,7 @@
 
 # install depended packages
 sudo aptitude update
-sudo aptitude install libqt4-dev
+sudo aptitude install -y libqt4-dev qt4-dev-tools
 sudo aptitude install git
 
 # copy build configurations
