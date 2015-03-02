@@ -1,6 +1,9 @@
+os:
+  - linux
+  - osx
 language: cpp
 before_install:
-  - scritps/circle/dependencies_pre.sh
+  - scritps/travis/dependencies_pre.sh
 script:
   - qmake
   - make
