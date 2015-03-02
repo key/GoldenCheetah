@@ -3,7 +3,7 @@ os:
   - osx
 language: cpp
 before_install:
-  - scritps/travis/dependencies_pre.sh
+  - scripts/travis/dependencies_pre.sh
 script:
   - qmake
   - make
