@@ -2,7 +2,7 @@
 
 # install depended packages
 sudo aptitude update
-sudo aptitude install -y libqt4-dev qt4-dev-tools git
+sudo aptitude install -y libqt4-dev qt4-dev-tools git build-essential
 
 # copy build configurations
 # FIXME anyone change paths in gcconfig.pri.in
