@@ -1,6 +1,6 @@
 dependencies:
   pre:
-    - scritps/circle/dependencies_pre.sh
+    - scripts/circle/dependencies_pre.sh
 
 test:
   pre:
