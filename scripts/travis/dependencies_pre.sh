@@ -2,7 +2,7 @@
 
 # install depended packages
 sudo apt-get update
-sudo apt-get install -y libboost-dev libqt4-dev qt4-dev-tools git build-essential
+sudo apt-get install -y libboost-dev libvlc-dev libqt4-dev qt4-dev-tools git build-essential
 
 # copy build configurations
 # FIXME anyone change paths in gcconfig.pri.in
