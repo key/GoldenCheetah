@@ -2,7 +2,7 @@
 # local installs of Boost and srmio in the copy.  If you don't want
 # support for SRM downloads, just comment out the SRMIO_INSTALL line.
 
-BOOST_INSTALL = /usr/local/boost
+BOOST_INSTALL = /usr/include/boost
 #SRMIO_INSTALL = /usr/local/srmio
 #D2XX_INCLUDE = /usr/local/include/D2XX
 
