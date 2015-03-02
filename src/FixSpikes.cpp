@@ -20,15 +20,16 @@
 #include "LTMOutliers.h"
 #include "Settings.h"
 #include "Units.h"
+#include "HelpWhatsThis.h"
 #include <algorithm>
 #include <QVector>
-
-#define tr(s) QObject::tr(s)
 
 // Config widget used by the Preferences/Options config panes
 class FixSpikes;
 class FixSpikesConfig : public DataProcessorConfig
 {
+    Q_DECLARE_TR_FUNCTIONS(FixSpikesConfig)
+
     friend class ::FixSpikes;
     protected:
         QHBoxLayout *layout;
@@ -38,6 +39,9 @@ class FixSpikesConfig : public DataProcessorConfig
 
     public:
         FixSpikesConfig(QWidget *parent) : DataProcessorConfig(parent) {
+
+            HelpWhatsThis *help = new HelpWhatsThis(parent);
+            parent->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::MenuBar_Edit_FixPowerSpikes));
 
             layout = new QHBoxLayout(this);
 
@@ -90,17 +94,15 @@ class FixSpikesConfig : public DataProcessorConfig
         }
 
         void readConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            double tol = settings->value(GC_DPFS_MAX, "1500").toDouble();
-            double stop = settings->value(GC_DPFS_VARIANCE, "1000").toDouble();
+            double tol = appsettings->value(NULL, GC_DPFS_MAX, "1500").toDouble();
+            double stop = appsettings->value(NULL, GC_DPFS_VARIANCE, "1000").toDouble();
             max->setValue(tol);
             variance->setValue(stop);
         }
 
         void saveConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            settings->setValue(GC_DPFS_MAX, max->value());
-            settings->setValue(GC_DPFS_VARIANCE, variance->value());
+            appsettings->setValue(GC_DPFS_MAX, max->value());
+            appsettings->setValue(GC_DPFS_VARIANCE, variance->value());
         }
 };
 
@@ -110,6 +112,7 @@ class FixSpikesConfig : public DataProcessorConfig
 //                           to ensure dataPoints are contiguous in time
 //
 class FixSpikes : public DataProcessor {
+    Q_DECLARE_TR_FUNCTIONS(FixSpikes)
 
     public:
         FixSpikes() {}
@@ -122,9 +125,14 @@ class FixSpikes : public DataProcessor {
         DataProcessorConfig* processorConfig(QWidget *parent) {
             return new FixSpikesConfig(parent);
         }
+
+        // Localized Name
+        QString name() {
+            return (tr("Fix Power Spikes"));
+        }
 };
 
-static bool fixSpikesAdded = DataProcessorFactory::instance().registerProcessor(QString(tr("Fix Power Spikes")), new FixSpikes());
+static bool fixSpikesAdded = DataProcessorFactory::instance().registerProcessor(QString("Fix Power Spikes"), new FixSpikes());
 
 bool
 FixSpikes::postProcess(RideFile *ride, DataProcessorConfig *config=0)
@@ -135,9 +143,8 @@ FixSpikes::postProcess(RideFile *ride, DataProcessorConfig *config=0)
     // get settings
     double variance, max;
     if (config == NULL) { // being called automatically
-        boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-        max = settings->value(GC_DPFS_MAX, "1500").toDouble();
-        variance = settings->value(GC_DPFS_VARIANCE, "1000").toDouble();
+        max = appsettings->value(NULL, GC_DPFS_MAX, "1500").toDouble();
+        variance = appsettings->value(NULL, GC_DPFS_VARIANCE, "1000").toDouble();
     } else { // being called manually
         max = ((FixSpikesConfig*)(config))->max->value();
         variance = ((FixSpikesConfig*)(config))->variance->value();

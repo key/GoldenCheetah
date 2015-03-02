@@ -52,6 +52,19 @@ const static uint8_t ss_command[56] = {
         0x29, 0x00, 0x00, 0x16, 0x40, 0x00, 0xE0
 };
 
+const static uint8_t rrc_command[56] = {
+
+        0x31, 0x00, 0x00, 0x0e, 0x40, 0x00, 0xe0,
+        0x69, 0x00, 0x00, 0x0e, 0x08, 0x00, 0xe0,
+        0x61, 0x00, 0x00, 0x0e, 0x10, 0x00, 0xe0,
+        0x78, 0x00, 0x00, 0x0e, 0x18, 0x61, 0xc1,
+        0x4d, 0x00, 0x00, 0x0e, 0x24, 0x00, 0xe0,
+        0x6e, 0x00, 0x00, 0x0e, 0x2c, 0x57, 0xc1,
+        0x3d, 0x00, 0x00, 0x0e, 0x34, 0x00, 0xe0,
+        0x23, 0x00, 0x00, 0x0e, 0x38, 0x16, 0xc2
+
+};    
+
 /* ----------------------------------------------------------------------
  * CONSTRUCTOR/DESRTUCTOR
  * ---------------------------------------------------------------------- */
@@ -59,7 +72,7 @@ Computrainer::Computrainer(QObject *parent,  QString devname) : QThread(parent)
 {
 
     devicePower = deviceHeartRate = deviceCadence = deviceSpeed = deviceRRC = 0.00;
-    for (int i=0; i<24; spinData[i++] = 0.00) ;
+    for (int i=0; i<24; spinScan[i++] = 0) ;
     mode = DEFAULT_MODE;
     load = DEFAULT_LOAD;
     gradient = DEFAULT_GRADIENT;
@@ -153,7 +166,7 @@ bool Computrainer::isCalibrated()
 }
 
 void Computrainer::getTelemetry(double &power, double &heartrate, double &cadence, double &speed,
-                  double &RRC, bool &calibration, int &buttons, int &status)
+                  double &RRC, bool &calibration, int &buttons, uint8_t *ss, int &status)
 {
 
     pvars.lock();
@@ -165,13 +178,20 @@ void Computrainer::getTelemetry(double &power, double &heartrate, double &cadenc
     calibration = deviceCalibrated;
     buttons = deviceButtons;
     status = deviceStatus;
+    memcpy((void*)ss, (void*)spinScan, 24);
+
+    // work around to ensure controller doesn't miss button press. 
+    // The run thread will only set the button bits, they don't get
+    // reset until the ui reads the device state
+    //  Borrowed from: Fortius.cpp 
+    deviceButtons = 0; 
     pvars.unlock();
 }
 
 void Computrainer::getSpinScan(double spinData[])
 {
     pvars.lock();
-    for (int i=0; i<24; spinData[i] = this->spinData[i]) ;
+    for (int i=0; i<24; spinData[i] = this->spinScan[i]) ;
     pvars.unlock();
 }
 
@@ -244,7 +264,6 @@ void Computrainer::prepareCommand(int mode, double value)
     switch (mode) {
 
     case CT_ERGOMODE :
-
                 load = (int)value;
                 crc = calcCRC(load);
 
@@ -321,10 +340,8 @@ int Computrainer::calcCRC(int value)
 // funny, just a few lines of code. oh the pain to get this working :-)
 void Computrainer::unpackTelemetry(int &ss1, int &ss2, int &ss3, int &buttons, int &type, int &value8, int &value12)
 {
-    /* ---- looking at spinscan data -- commented out for release
-    static int ss[24];
+    static uint8_t ss[24];
     static int pos=0;
-    ----- */
 
     // inbound data is in the 7 byte array Computrainer::buf[]
     // for code clarity they hjave been put into these holdiing
@@ -344,6 +361,10 @@ void Computrainer::unpackTelemetry(int &ss1, int &ss2, int &ss3, int &buttons, i
     ss2 = s2<<1 | (b3&16)>>4;
     ss3 = s3<<1 | (b3&8)>>3;
 
+    // swap nibbles, is this really right?
+    ss1 = ((ss1&15)<<4) | (ss1&240)>>4;
+    ss2 = ((ss2&15)<<4) | (ss2&240)>>4;
+    ss3 = ((ss3&15)<<4) | (ss3&240)>>4;
 
     // buttons
     buttons = bt<<1 | (b3&4)>>2;
@@ -357,18 +378,24 @@ void Computrainer::unpackTelemetry(int &ss1, int &ss2, int &ss3, int &buttons, i
     // 12 bit value
     value12 = value8 | (b1&7)<<9 | (b3&2)<<7;
 
-    /* ------- Looking at spinscan data ? -- commented out for release
     if (buttons&64) {
-        for (pos=0; pos<24; pos++) fprintf(stderr, "%d, ", ss[pos]);
+        memcpy((uint8_t*)spinScan, (uint8_t*)ss+3, 21);
+        memcpy((uint8_t*)spinScan+21, (uint8_t*)ss, 3);
+        //for (pos=0; pos<24; pos++) fprintf(stderr, "%d, ", ss[pos]);
+        //fprintf(stderr, "\n");
         pos=0;
-        fprintf(stderr, "\n");
     }
     if (ss1 || ss2 || ss3) {
-        ss[pos++] = ss1;
-        ss[pos++] = ss2;
-        ss[pos++] = ss3;
+
+        // we drop the msb and do a ones compliment, but
+        // that looks eerily like a signed byte.
+        // suspect there is more hidden in there?
+        // but when decoded as a signed byte the numbers
+        // are all over the place. investigate further!
+        ss[pos++] = 127^(ss1&127);
+        ss[pos++] = 127^(ss2&127);
+        ss[pos++] = 127^(ss3&127);
     }
-    ------- */
 }
 
 
@@ -409,13 +436,6 @@ int Computrainer::restart()
 
 int Computrainer::stop()
 {
-    int status;
-
-    // get current status
-    pvars.lock();
-    status = this->deviceStatus;
-    pvars.unlock();
-
     // what state are we in anyway?
     pvars.lock();
     deviceStatus = 0; // Terminate it!
@@ -470,11 +490,10 @@ void Computrainer::run()
     int ss1,ss2,ss3, buttons, type, value8, value12;
 
     // newly read values - compared against cached values
-    int changed;
     int newmode;
     double newload, newgradient;
     double newspeed, newRRC;
-    bool newcalibrated, newhrconnected, newcadconnected;
+    bool newhrconnected, newcadconnected;
     bool isDeviceOpen = false;
 
     // Cached current values
@@ -486,14 +505,11 @@ void Computrainer::run()
     double curPower;                      // current output power in Watts
     double curHeartRate;                  // current heartrate in BPM
     double curCadence;                    // current cadence in RPM
-    double curSpeed;                      // current speef in KPH
+    double curSpeed;                      // current speed in KPH
     double curRRC;                        // calibrated Rolling Resistance
-    bool curcalibrated;                   // is it calibrated?
     bool curhrconnected;                  // is HR sensor connected?
     bool curcadconnected;                 // is CAD sensor connected?
-    double curspinData[24];               // SS values only in SS_MODE
     int curButtons;                       // Button status
-    int curStatus;                        // Device status running, paused, disconnected
 
 
     // initialise local cache & main vars
@@ -506,18 +522,13 @@ void Computrainer::run()
     curHeartRate = this->deviceHeartRate = 0;
     curCadence = this->deviceCadence = 0;
     curSpeed = this->deviceSpeed = 0;
-    curButtons = this->deviceButtons;
+    curButtons = this->deviceButtons = 0;
     curRRC = this->deviceRRC = 0;
-    curcalibrated = false;
     this->deviceCalibrated = false;
     curhrconnected = false;
     this->deviceHRConnected = false;
     curcadconnected = false;
     this->deviceCADConnected = false;
-    curButtons = 0;
-    this->deviceButtons = 0;
-    curStatus = this->deviceStatus;
-    for (int i=0; i<24; i++) curspinData[i] = this->spinData[i] = 0;
     pvars.unlock();
 
 
@@ -549,7 +560,6 @@ void Computrainer::run()
                 // UPDATE BASIC TELEMETRY (HR, CAD, SPD et al)
                 //----------------------------------------------------------------
 
-               changed = 0;
                unpackTelemetry(ss1, ss2, ss3, buttons, type, value8, value12);
 
                switch (type) {
@@ -559,8 +569,6 @@ void Computrainer::run()
                             pvars.lock();
                             this->deviceHeartRate = curHeartRate;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
@@ -570,8 +578,6 @@ void Computrainer::run()
                             pvars.lock();
                             this->devicePower = curPower;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
@@ -581,8 +587,6 @@ void Computrainer::run()
                             pvars.lock();
                             this->deviceCadence = curCadence;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
@@ -596,13 +600,11 @@ void Computrainer::run()
                             pvars.lock();
                             this->deviceSpeed = curSpeed = newspeed;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
                     case CT_RRC :
-                        newcalibrated = value12&2048 ? true : false;
+                        //newcalibrated = value12&2048 ? true : false;
                         newRRC = value12&~2048; // only use 11bits
                         newRRC /= 256;
 
@@ -610,8 +612,6 @@ void Computrainer::run()
                             pvars.lock();
                             this->deviceRRC = curRRC = newRRC;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
@@ -624,8 +624,6 @@ void Computrainer::run()
                             this->deviceHRConnected=curhrconnected=newhrconnected;
                             this->deviceCADConnected=curcadconnected=newcadconnected;
                             pvars.unlock();
-
-                            changed=1;
                         }
                         break;
 
@@ -639,7 +637,7 @@ void Computrainer::run()
             if (buttons != curButtons) {
                 // let the gui workout what the deal is with silly button values!
                 pvars.lock();
-                this->deviceButtons = curButtons = buttons;
+			  this->deviceButtons |= buttons; // Borrowed from Fortius.cpp: workaround to ensure controller doesn't miss button pushes
                 pvars.unlock();
             }
 
@@ -753,6 +751,11 @@ int Computrainer::sendCommand(int mode)      // writes a command to the device
             return rawWrite(SS_Command, 56);
             break;
 
+        case CT_CALIBRATE :
+            return rawWrite(const_cast<uint8_t*>(rrc_command), 56);
+            break;
+
+
         default :
             return -1;
             break;
@@ -806,7 +809,7 @@ int Computrainer::openPort()
     int ldisc=N_TTY; // LINUX
 #endif
 
-    if ((devicePort=open(deviceFilename.toAscii(),O_RDWR | O_NOCTTY | O_NONBLOCK)) == -1) return errno;
+    if ((devicePort=open(deviceFilename.toLatin1(),O_RDWR | O_NOCTTY | O_NONBLOCK)) == -1) return errno;
 
     tcflush(devicePort, TCIOFLUSH); // clear out the garbage
 
@@ -821,15 +824,22 @@ int Computrainer::openPort()
     cfsetspeed(&deviceSettings, B2400);
 
     // further attributes
-    deviceSettings.c_iflag= IGNPAR;
-    deviceSettings.c_oflag=0;
+    deviceSettings.c_iflag &= ~(IGNBRK | BRKINT | ICRNL | INLCR | PARMRK | INPCK | ICANON | ISTRIP | IXON | IXOFF | IXANY);
+    deviceSettings.c_iflag |= IGNPAR;
     deviceSettings.c_cflag &= (~CSIZE & ~CSTOPB);
+    deviceSettings.c_oflag=0;
+
 #if defined(Q_OS_MACX)
-    deviceSettings.c_cflag |= (CS8 | CREAD | HUPCL | CCTS_OFLOW | CRTS_IFLOW);
+    deviceSettings.c_cflag &= (~CCTS_OFLOW & ~CRTS_IFLOW); // no hardware flow control
+    deviceSettings.c_cflag |= (CS8 | CLOCAL | CREAD | HUPCL);
 #else
-    deviceSettings.c_cflag |= (CS8 | CREAD | HUPCL | CRTSCTS);
+    deviceSettings.c_cflag &= (~CRTSCTS); // no hardware flow control
+    deviceSettings.c_cflag |= (CS8 | CLOCAL | CREAD | HUPCL);
 #endif
     deviceSettings.c_lflag=0;
+    deviceSettings.c_cc[VSTART] = 0x11;    
+    deviceSettings.c_cc[VSTOP]  = 0x13;  
+    deviceSettings.c_cc[VEOF]   = 0x20; 
     deviceSettings.c_cc[VMIN]=0;
     deviceSettings.c_cc[VTIME]=0;
 
@@ -837,6 +847,7 @@ int Computrainer::openPort()
     if(tcsetattr(devicePort, TCSANOW, &deviceSettings) == -1) return errno;
     tcgetattr(devicePort, &deviceSettings);
 
+    tcflush(devicePort, TCIOFLUSH); // clear out the garbage
 #else
     // WINDOWS USES SET/GETCOMMSTATE AND READ/WRITEFILE
 
@@ -847,11 +858,11 @@ int Computrainer::openPort()
     QString portSpec;
     int portnum = deviceFilename.midRef(3).toString().toInt();
     if (portnum < 10)
-	   portSpec = deviceFilename;
+       portSpec = deviceFilename;
     else
-	   portSpec = "\\\\.\\" + deviceFilename;
+       portSpec = "\\\\.\\" + deviceFilename;
     wchar_t deviceFilenameW[32]; // \\.\COM32 needs 9 characters, 32 should be enough?
-    MultiByteToWideChar(CP_ACP, 0, portSpec.toAscii(), -1, (LPWSTR)deviceFilenameW,
+    MultiByteToWideChar(CP_ACP, 0, portSpec.toLatin1(), -1, (LPWSTR)deviceFilenameW,
                     sizeof(deviceFilenameW));
 
     // win32 commport API
@@ -867,13 +878,19 @@ int Computrainer::openPort()
     deviceSettings.fParity = NOPARITY;
     deviceSettings.ByteSize = 8;
     deviceSettings.StopBits = ONESTOPBIT;
+    deviceSettings.XonChar = 11;
+    deviceSettings.XoffChar = 13;
     deviceSettings.EofChar = 0x0;
     deviceSettings.ErrorChar = 0x0;
     deviceSettings.EvtChar = 0x0;
     deviceSettings.fBinary = true;
-    deviceSettings.fRtsControl = RTS_CONTROL_HANDSHAKE;
-    deviceSettings.fOutxCtsFlow = TRUE;
-
+    deviceSettings.fOutX = 0;
+    deviceSettings.fInX = 0;
+    deviceSettings.XonLim = 0;
+    deviceSettings.XoffLim = 0;
+    deviceSettings.fRtsControl = RTS_CONTROL_ENABLE;
+    deviceSettings.fDtrControl = DTR_CONTROL_ENABLE;
+    deviceSettings.fOutxCtsFlow = FALSE; //TRUE;
 
     if (SetCommState(devicePort, &deviceSettings) == false) {
         CloseHandle(devicePort);
@@ -895,7 +912,7 @@ int Computrainer::openPort()
 
 int Computrainer::rawWrite(uint8_t *bytes, int size) // unix!!
 {
-    int rc=0,ibytes;
+    int rc=0;
 
 #ifdef WIN32
     DWORD cBytes;
@@ -904,7 +921,7 @@ int Computrainer::rawWrite(uint8_t *bytes, int size) // unix!!
     return rc;
 
 #else
-
+    int ibytes;
     ioctl(devicePort, FIONREAD, &ibytes);
 
     // timeouts are less critical for writing, since vols are low
@@ -926,7 +943,7 @@ int Computrainer::rawRead(uint8_t bytes[], int size)
     int rc=0;
 
 #ifdef WIN32
-
+Q_UNUSED(size);
     // Readfile deals with timeouts and readyread issues
     DWORD cBytes;
     rc = ReadFile(devicePort, bytes, 7, &cBytes, NULL);
@@ -966,8 +983,9 @@ int Computrainer::rawRead(uint8_t bytes[], int size)
 // returns true if the device exists and false if not
 bool Computrainer::discover(QString filename)
 {
-    uint8_t *greeting = (uint8_t *)"Racermate";
+    uint8_t *greeting = (uint8_t *)"RacerMate";
     uint8_t handshake[7];
+    int rc;
 
     if (filename.isEmpty()) return false; // no null filenames thanks
 
@@ -978,13 +996,20 @@ bool Computrainer::discover(QString filename)
     openPort();
 
     // send a probe
-    if (rawWrite(greeting, 9) == -1) return false;
+    if ((rc=rawWrite(greeting, 9)) == -1) {
+        closePort();
+        return false;
+    }
 
     // did we get something back from the device?
-    if (rawRead(handshake, 6) != 6) return false;
+    if ((rc=rawRead(handshake, 6)) < 6) {
+        closePort();
+        return false;
+    }
+
+    closePort();
 
     handshake[6] = '\0';
-
     if (strcmp((char *)handshake, "LinkUp")) return false;
     else return true;
 }

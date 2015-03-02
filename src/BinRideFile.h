@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Sean C. Rhea (srhea@srhea.net)
+ * Copyright (c) 2012 Damien Grauser (Damien.Grauser@pev-geneve.ch)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -18,11 +18,13 @@
 
 #ifndef _BinRideFile_h
 #define _BinRideFile_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 
 struct BinFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const; 
+    bool hasWrite() const { return false; }
 };
 
 #endif // _BinRideFile_h

@@ -1,16 +1,16 @@
-/* 
+/*
  * Copyright (c) 2008 Sean C. Rhea (srhea@srhea.net)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -30,7 +30,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <math.h>
+#include <cmath>
 #include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,23 +46,28 @@
 bool SerialRegistered = CommPort::addListFunction(&Serial::myListCommPorts);
 
 #ifdef Q_OS_WIN32
-Serial::Serial(const QString &path) : path(path), isOpen(false)
+Serial::Serial(const QString &path) : CommPort("Serial"), path(path), _isOpen(false)
 {
 }
 #else
-Serial::Serial(const QString &path) : path(path), fd(-1) 
+Serial::Serial(const QString &path) : CommPort("Serial"), path(path), fd(-1)
 {
 }
 #endif
 
 Serial::~Serial()
 {
-#ifdef Q_OS_WIN32
-    if (isOpen == true) {
+    if( isOpen() )
         close();
-    }
+}
+
+bool
+Serial::isOpen()
+{
+#ifdef Q_OS_WIN32
+    return _isOpen;
 #else
-    if (fd >= 0) close();
+    return fd >= 0;
 #endif
 }
 
@@ -70,12 +75,11 @@ bool
 Serial::open(QString &err)
 {
 #ifndef Q_OS_WIN32
-
     //
     // Linux and Mac OSX use stdio / termio / tcsetattr
     //
     assert(fd < 0);
-    fd = ::open(path.toAscii().constData(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+    fd = ::open(path.toLatin1().constData(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0) {
         err = QString("open: ") + strerror(errno);
         return false;
@@ -84,11 +88,11 @@ Serial::open(QString &err)
     int flags = fcntl(fd, F_GETFL, 0);
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
         perror("fcntl");
-        assert(0);
+        return false;
     }
     if (tcgetattr(fd, &tty) == -1) {
         perror("tcgetattr");
-        assert(0);
+        return false;
     }
     tty.c_cflag &= ~CRTSCTS; /* no hardware flow control */
     tty.c_cflag &= ~(PARENB | PARODD); /* no parity */
@@ -98,7 +102,7 @@ Serial::open(QString &err)
     tty.c_cflag |= CLOCAL | CREAD; /* ignore modem control lines */
     if (cfsetspeed(&tty, B9600) == -1) {
         perror("cfsetspeed");
-        assert(0);
+        return false;
     }
     tty.c_iflag = IGNBRK; /* ignore BREAK condition on input */
     tty.c_lflag = 0;
@@ -106,11 +110,12 @@ Serial::open(QString &err)
     tty.c_cc[VMIN] = 1; /* all reads return at least one character */
     if (tcsetattr(fd, TCSANOW, &tty) == -1) {
         perror("tcsetattr");
-        assert(0);
+        return false;
     }
+    tcflush(fd, TCIOFLUSH); // clear out the garbage
     return true;
 #else
-
+Q_UNUSED(err);
     //
     // Windows uses CreateFile / DCB / SetCommState
     //
@@ -122,16 +127,16 @@ Serial::open(QString &err)
     // then we need to open "\\.\COMX" not "COMX"
 	QString portSpec = "\\\\.\\" + path;
     wchar_t deviceFilenameW[32]; // \\.\COM32 needs 9 characters, 32 should be enough?
-    MultiByteToWideChar(CP_ACP, 0, portSpec.toAscii(), -1, (LPWSTR)deviceFilenameW,
+    MultiByteToWideChar(CP_ACP, 0, portSpec.toLatin1(), -1, (LPWSTR)deviceFilenameW,
                     sizeof(deviceFilenameW));
 
     // win32 commport API
     fd = CreateFile (deviceFilenameW, GENERIC_READ|GENERIC_WRITE,
         FILE_SHARE_DELETE|FILE_SHARE_WRITE|FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 
-    if (fd == INVALID_HANDLE_VALUE) return isOpen = false;
+    if (fd == INVALID_HANDLE_VALUE) return _isOpen = false;
 
-    if (GetCommState (fd, &deviceSettings) == false) return isOpen = false;
+    if (GetCommState (fd, &deviceSettings) == false) return _isOpen = false;
 
     // so we've opened the comm port lets set it up for
     deviceSettings.BaudRate = CBR_9600;
@@ -148,7 +153,7 @@ Serial::open(QString &err)
 
     if (SetCommState(fd, &deviceSettings) == false) {
         CloseHandle(fd);
-        return isOpen = false;
+        return _isOpen = false;
     }
 
     timeouts.ReadIntervalTimeout = 0;
@@ -158,7 +163,7 @@ Serial::open(QString &err)
     timeouts.WriteTotalTimeoutMultiplier = 0;
     SetCommTimeouts(fd, &timeouts);
 
-    return isOpen = true;
+    return _isOpen = true;
 #endif
 }
 
@@ -167,12 +172,13 @@ Serial::close()
 {
 #ifndef Q_OS_WIN32
     assert(fd >= 0);
+    tcflush(fd, TCIOFLUSH); // clear out the garbage
     ::close(fd);
     fd = -1;
 #else
-    if (isOpen == true) {
+    if (_isOpen == true) {
         CloseHandle(fd);
-        isOpen = false;
+        _isOpen = false;
     }
 #endif
 }
@@ -250,6 +256,7 @@ Serial::read(void *buf, size_t nbyte, QString &err)
     }
     return count;
 #else
+Q_UNUSED(err);
 
     //
     // Win32 API uses readfile
@@ -309,7 +316,51 @@ Serial::write(void *buf, size_t nbyte, QString &err)
 QString
 Serial::name() const
 {
-    return QString("Serial: ") + path;
+    return path;
+}
+
+bool
+Serial::setBaudRate(int speed, QString &err)
+{
+
+    // only really needed for Moxy 
+    // so not doing a big old switch/case
+    if (speed == 115200) {
+
+#ifndef Q_OS_WIN32
+
+        // LINUX / MAC
+        struct termios tty;
+        if (tcgetattr(fd, &tty) == -1) {
+            perror("tcgetattr");
+        }
+        cfsetspeed(&tty, B115200);
+
+        /* put terminal in raw mode after flushing */
+        if (tcsetattr(fd,TCSAFLUSH,&tty) < 0) {
+            qDebug()<<"cannot set raw mode";
+            return false;
+        }
+#else
+
+        // WINDOWS
+
+        DCB deviceSettings;    // serial port settings baud rate et al
+
+        // get current settings
+        if (GetCommState (fd, &deviceSettings) == false) 
+            return false;
+
+        // set the baud rate then
+        deviceSettings.BaudRate = CBR_115200;
+
+        // apply
+        if (SetCommState(fd, &deviceSettings) == false) 
+            return false;
+#endif
+        return true; // this worked
+    }
+    return false;
 }
 
 #ifndef Q_OS_WIN32
@@ -323,8 +374,26 @@ find_devices(char *result[], int capacity)
     DIR *dirp;
     struct dirent *dp;
     int count = 0;
+
+    // updated serial regexp to include many more serial devices, regardless of whether they are
+    // relevant for PT downloads. The original list was rather restrictive in this respect
+    //
+    // To help decode this regexp;
+    // /dev/cu.PL2303-[0-9A-F]+        - Prolific device driver for USB/serial device
+    // /dev/cu.usbserial               - typical for Sewell on Mac
+    // /dev/ANTUSBStick.slabvcp        - Silicon Labs Virtual Com driver for Garmin USB1 stick on a Mac
+    // /dev/SLAB_USBtoUART             - Silicon Labs Driver for USB/Serial
+    // /dev/usbmodem[0-9A-F]+          - Usb modem module driver (generic)
+    // /dev/usbserial-[0-9A-Z]+        - usbserial module driver (generic)
+    // /dev/KeySerial[0-9]             - Keyspan USB/Serial driver
+    // /dev/ttyU[0-9]                  - Open BSD usb serial devices
+    // /dev/ttyUSB[0-9]                - Standard USB/Serial device on Linux/Mac
+    // /dev/ttyS[0-2]                  - Serial TTY, 0-2 is restrictive, but noone has complained yet!
+    // /dev/ttyACM*                    - ACM converter, admittedly used largely for Mobiles
+    // /dev/ttyMI*                     - MOXA PCI cards
+    // /dev/rfcomm*                    - Bluetooth devices
     if (regcomp(&reg, 
-                "^(cu\\.(PL2303-[0-9A-F]+|usbmodem[0-9A-F]+|usbserial-[0-9A-F]+|KeySerial[0-9])|ttyUSB[0-9]|ttyS[0-2])$", 
+                "^(cu\\.(PL2303-[0-9A-F]+|ANTUSBStick.slabvcp|SLAB_USBtoUART|usbmodem[0-9A-F]+|usbserial-[0-9A-Z]+|KeySerial[0-9]|usbserial)|ttyU[0-9]|ttyUSB[0-9]|ttyS[0-2]|ttyACM*|ttyMI*|rfcomm*)$",
                 REG_EXTENDED|REG_NOSUB)) {
         assert(0);
     }
@@ -355,7 +424,7 @@ find_devices(char *result[], int capacity)
         QString shortCOM = QString("COM%1").arg(i);
 	    QString longCOM = "\\\\.\\" + shortCOM;
         wchar_t deviceFilenameW[32];
-        MultiByteToWideChar(CP_ACP, 0, longCOM.toAscii(), -1, (LPWSTR)deviceFilenameW,
+        MultiByteToWideChar(CP_ACP, 0, longCOM.toLatin1(), -1, (LPWSTR)deviceFilenameW,
                         sizeof(deviceFilenameW));
 
         // Try to open the port

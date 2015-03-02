@@ -17,17 +17,23 @@
  */
 
 #include "BestIntervalDialog.h"
-#include "MainWindow.h"
+#include "Athlete.h"
+#include "Context.h"
+#include "IntervalItem.h"
 #include "RideFile.h"
+#include "RideItem.h"
+#include "HelpWhatsThis.h"
 #include <QMap>
-#include <assert.h>
-#include <math.h>
+#include <cmath>
 
-BestIntervalDialog::BestIntervalDialog(MainWindow *mainWindow) :
-    mainWindow(mainWindow)
+BestIntervalDialog::BestIntervalDialog(Context *context) :
+    context(context)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowTitle("Find Best Intervals");
+    setWindowTitle("Find Intervals");
+    HelpWhatsThis *help = new HelpWhatsThis(this);
+    this->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::FindIntervals));
+
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
     QHBoxLayout *intervalLengthLayout = new QHBoxLayout;
@@ -143,9 +149,9 @@ struct CompareBests {
 void
 BestIntervalDialog::findClicked()
 {
-    const RideFile *ride = mainWindow->currentRide();
+    const RideFile *ride = context->ride ? context->ride->ride() : NULL;
     if (!ride) {
-        QMessageBox::critical(this, tr("Select Ride"), tr("No ride selected!"));
+        QMessageBox::critical(this, tr("Select Activity"), tr("No activity selected!"));
         return;
     }
 
@@ -256,6 +262,9 @@ BestIntervalDialog::findBests(const RideFile *ride, double windowSizeSecs,
     double totalWatts = 0.0;
     QList<const RideFilePoint*> window;
 
+    // ride is shorter than the window size!
+    if (windowSizeSecs > ride->dataPoints().last()->secs + secsDelta) return;
+
     // We're looking for intervals with durations in [windowSizeSecs, windowSizeSecs + secsDelta).
     foreach (const RideFilePoint *point, ride->dataPoints()) {
         // Discard points until interval duration is < windowSizeSecs + secsDelta.
@@ -315,17 +324,18 @@ BestIntervalDialog::addClicked()
             double start = resultsTable->item(i,3)->text().toDouble();
             double stop = resultsTable->item(i,4)->text().toDouble();
             QString name = resultsTable->item(i,2)->text();
-            const RideFile *ride = mainWindow->currentRide();
+            const RideFile *ride = context->ride ? context->ride->ride() : NULL;
 
-            QTreeWidgetItem *allIntervals = mainWindow->mutableIntervalItems();
+            QTreeWidgetItem *allIntervals = context->athlete->mutableIntervalItems();
             QTreeWidgetItem *last =
                 new IntervalItem(ride, name, start, stop,
                                  ride->timeToDistance(start),
                                  ride->timeToDistance(stop),
                                  allIntervals->childCount()+1);
+            last->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled);
             // add
             allIntervals->addChild(last);
         }
     }
-    mainWindow->updateRideFileIntervals();
+    context->athlete->updateRideFileIntervals();
 }

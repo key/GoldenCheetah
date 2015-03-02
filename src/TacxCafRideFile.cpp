@@ -21,10 +21,10 @@
 #include <QDebug>
 #include <QFile>
 #include <QDateTime>
-#include <assert.h>
 
 struct TacxCafFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const;
+    virtual bool hasWrite() const { return false; }
 };
 
 static int tacxCafFileReaderRegistered =
@@ -84,7 +84,7 @@ static const int TACX_RIDE_DATA_BLOCK = 3020;
 
 static const QString TACX_FORTIUS_DEVICE_TYPE = "Tacx Fortius";
 
-RideFile *TacxCafFileReader::openRideFile(QFile &file, QStringList &errors) const {
+RideFile *TacxCafFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const {
     if (!file.open(QFile::ReadOnly)) {
        errors << ("Could not open ride file: \""
                    + file.fileName() + "\"");
@@ -102,7 +102,11 @@ RideFile *TacxCafFileReader::openRideFile(QFile &file, QStringList &errors) cons
 }
 
 qint16 readHeaderBlock(const QByteArray& block, QStringList& errors) {
-    assert(block.size() == 8);
+
+    if (block.size() != 8) {
+        errors << "Block size is not 8, is this a valid Tacx run file?";
+        return 0;
+    }
 
     qint16 fingerprint = readShortFromByteArray(block);
 
@@ -119,6 +123,8 @@ RideFile* readBlocks(const QByteArray& blocks, const qint16 version, QStringList
     RideFile* rideFile = new RideFile();
 
     rideFile->setDeviceType(TACX_FORTIUS_DEVICE_TYPE);
+    rideFile->setFileFormat("Tacx Fortius (caf)");
+
 
     QByteArray remainingBytes = blocks;
     while(!remainingBytes.isEmpty()) {
@@ -167,26 +173,47 @@ bool readRideInformationBlock(RideFile* rideFile, const QByteArray& block) {
     return true;
 }
 
+struct RideFilePoint readSinglePoint(const QByteArray& record, const double& timeInSeconds, const double& recordingIntervalInSeconds,
+                                     const float& startDistance = 0.0f, const float& lastDistance = 0.0f) {
+    float distance = readFloatFromByteArray(record);
+    float relativeDistance = distance - startDistance;
+
+    quint8 heartRate = readByteFromByteArray(record.mid(4));
+    quint8 cadence = readByteFromByteArray(record.mid(5));
+    quint16 powerX10 = readUnsignedShortFromByteArray(record.mid(6));
+    double power = powerX10 / 10.0;
+
+    double speed = (relativeDistance - lastDistance) / recordingIntervalInSeconds;
+
+    struct RideFilePoint point(timeInSeconds, cadence, heartRate, relativeDistance / 1000.0, speed * 3.6, 0.0, power, 0.0, 0.0, 0.0, 0.0, 0.0, RideFile::NoTemp,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0);
+
+    return point;
+}
+
 bool readRideData(RideFile *rideFile, const QByteArray& block, const int nrOfRecords, const qint16 version) {
     const int dataRecordSize = (version == 100) ? TACX_RIDE_DATA_BLOCK_SIZE : TACX_RIDE_DATA_BLOCK_SIZE + 8;
 
     double seconds = rideFile->recIntSecs();
+
+    struct RideFilePoint firstDataPoint = readSinglePoint(block, seconds, rideFile->recIntSecs());
+    float startDistance = firstDataPoint.km * 1000.0;
     float lastDistance = 0.0f;
     for(int i = 0; i < nrOfRecords; i++, seconds += rideFile->recIntSecs()) {
         const QByteArray& record = block.mid(i * dataRecordSize);
+        struct RideFilePoint nextDataPoint = readSinglePoint(record, seconds, rideFile->recIntSecs(), startDistance, lastDistance);
+        lastDistance = nextDataPoint.km * 1000.0;
 
-        float distance = readFloatFromByteArray(record);
-        quint8 heartRate = readByteFromByteArray(record.mid(4));
-        quint8 cadence = readByteFromByteArray(record.mid(5));
-        quint16 powerX10 = readUnsignedShortFromByteArray(record.mid(6));
-        double power = powerX10 / 10.0;
-
-        double speed = (distance - lastDistance) / rideFile->recIntSecs();
-
-        rideFile->appendPoint(seconds, cadence, heartRate, distance / 1000.0, speed * 3.6, 0.0, power, 0.0, 0.0, 0.0, 0.0, 0);
-        lastDistance = distance;
+        rideFile->appendPoint(nextDataPoint.secs, nextDataPoint.cad,
+                              nextDataPoint.hr, nextDataPoint.km,
+                              nextDataPoint.kph, nextDataPoint.nm,
+                              nextDataPoint.watts, nextDataPoint.alt,
+                              nextDataPoint.lon, nextDataPoint.lat,
+                              nextDataPoint.headwind, 0.0, RideFile::NoTemp, 0.0, 
+                              0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                              0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,nextDataPoint.interval);
     }
-
     return true;
 }
 

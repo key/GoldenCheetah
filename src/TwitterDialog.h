@@ -18,31 +18,50 @@
 
 #ifndef TWITTERDIALOG_H
 #define TWITTERDIALOG_H
+#include "GoldenCheetah.h"
 
 #include <QObject>
 #include <QtGui>
+#include <QCheckBox>
+#include <QDialog>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QGroupBox>
+#include <QtGui>
 #include "MainWindow.h"
 #include "RideItem.h"
+#include "RideMetric.h"
+#include "Context.h"
 
-#ifdef GC_HAVE_LIBOAUTH
-extern "C" {
-#include <oauth.h>
-}
+#ifdef GC_HAVE_KQOAUTH
+#include <kqoauthmanager.h>
 #endif
 
 class TwitterDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 public:
-     TwitterDialog(MainWindow *mainWindow, RideItem *item);
+     TwitterDialog(Context *context, RideItem *item);
+    ~TwitterDialog();
 
 signals:
+    void extraTokensReady(const QVariantMap &extraTokens);
+    void linkingFailed();
+    void linkingSucceeded();
+    void statusPosted();
 
 private slots:
-     void onCheck(int state);
-     void tweetMsgChange(QString);
-     void tweetCurrentRide();
+    void onCheck(int state);
+    void tweetMsgChange(QString);
+    void tweetCurrentRide();
+    void onRequestReady(QByteArray);
+    void onAuthorizedRequestDone();
+
 private:
+    Context *context;
 
      QPushButton *tweetButton;
      QPushButton *cancelButton;
@@ -63,8 +82,9 @@ private:
 
      RideItem *ride;
      QString getTwitterMessage();
-     boost::shared_ptr<QSettings> settings;
 
+     KQOAuthManager *oauthManager;
+     KQOAuthRequest *oauthRequest;
 };
 
 #endif // TWITTERDIALOG_H

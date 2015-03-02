@@ -18,10 +18,11 @@
 
 #ifndef _GC_RideFileTableModel_h
 #define _GC_RideFileTableModel_h 1
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 #include "RideFileCommand.h"
-#include "MainWindow.h"
+#include "Context.h"
 #include <QAbstractTableModel>
 
 //
@@ -34,6 +35,8 @@
 class RideFileTableModel : public QAbstractTableModel
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
@@ -79,6 +82,12 @@ class RideFileTableModel : public QAbstractTableModel
         // RideCommand signals trapped here
         void beginCommand(bool undo, RideCommand *);
         void endCommand(bool undo, RideCommand *);
+
+        // Import wizard frees the ridefile memory to
+        // stop exhausting memory, but we need to know
+        // coz we reference the ride file and not the 
+        // ride item. long story.
+        void deleted();
 
         // force redraw - used by anomaly detection and find
         void forceRedraw();

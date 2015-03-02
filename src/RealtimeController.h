@@ -19,27 +19,33 @@
 
 // Abstract base class for Realtime device controllers
 #include "RealtimeData.h"
-#include "RealtimeWindow.h"
+#include "TrainSidebar.h"
 
 #ifndef _GC_RealtimeController_h
 #define _GC_RealtimeController_h 1
+#include "GoldenCheetah.h"
 
 #define DEVICE_ERROR 1
 #define DEVICE_OK 0
 
-class RealtimeController
+class RealtimeController : public QObject
 {
-public:
-    RealtimeWindow *parent;                     // for push devices
+    Q_OBJECT
 
-    RealtimeController (RealtimeWindow *parent);
+public:
+    TrainSidebar *parent;                     // for push devices
+
+    RealtimeController (TrainSidebar *parent, DeviceConfiguration *dc = 0);
     virtual ~RealtimeController() {}
 
     virtual int start();
     virtual int restart();                              // restart after paused
     virtual int pause();                                // pauses data collection, inbound telemetry is discarded
     virtual int stop();                                 // stops data collection thread
-    virtual bool discover(char *pathname);              // tell if a device is present at port passed
+
+    // for auto-configuration
+    virtual bool find();                                // tell if the device is present (usb typically)
+    virtual bool discover(QString);              // tell if a device is present at serial port passed
 
     // push or pull telemetry
     virtual bool doesPush();                    // this device is a push device (e.g. Quarq)
@@ -54,6 +60,14 @@ public:
     virtual void setLoad(double) { return; }
     virtual void setGradient(double) { return; }
     virtual void setMode(int) { return; }
+
+    // post process, based upon device configuration
+    void processRealtimeData(RealtimeData &rtData);
+    void processSetup();
+
+private:
+    DeviceConfiguration *dc;
+    DeviceConfiguration devConf;
 };
 
 #endif // _GC_RealtimeController_h

@@ -20,7 +20,6 @@
 #include <algorithm> // for std::sort
 #include <QDomDocument>
 #include <QVector>
-#include <assert.h>
 
 #include <QDebug>
 
@@ -28,10 +27,10 @@
 
 static int gcFileReaderRegistered =
     RideFileFactory::instance().registerReader(
-        "gc", "GoldenCheetah Native Format", new GcFileReader());
+        "gc", "GoldenCheetah XML", new GcFileReader());
 
 RideFile *
-GcFileReader::openRideFile(QFile &file, QStringList &errors) const
+GcFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const
 {
     QDomDocument doc("GoldenCheetah");
     if (!file.open(QIODevice::ReadOnly)) {
@@ -56,6 +55,8 @@ GcFileReader::openRideFile(QFile &file, QStringList &errors) const
         QString value = attr.attribute("value");
         if (key == "Device type")
             rideFile->setDeviceType(value);
+        else if (key == "File Format")
+            rideFile->setFileFormat(value);
         if (key == "Start time") {
             // by default QDateTime is localtime - the source however is UTC
             QDateTime aslocal = QDateTime::fromString(value, DATETIME_FORMAT);
@@ -63,6 +64,9 @@ GcFileReader::openRideFile(QFile &file, QStringList &errors) const
             QDateTime asUTC = QDateTime(aslocal.date(), aslocal.time(), Qt::UTC);
             // now set in localtime
             rideFile->setStartTime(asUTC.toLocalTime());
+        }
+        if (key == "Identifier") {
+            rideFile->setId(value);
         }
     }
 
@@ -143,7 +147,7 @@ GcFileReader::openRideFile(QFile &file, QStringList &errors) const
         lat = sample.attribute("lat", "0.0").toDouble();
         while ((interval < intervalStops.size()) && (secs >= intervalStops[interval]))
             ++interval;
-        rideFile->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, lon, lat, headwind, interval);
+        rideFile->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, lon, lat, headwind, 0.0, RideFile::NoTemp, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, interval);
         if (!recIntSet) {
             rideFile->setRecIntSecs(sample.attribute("len").toDouble());
             recIntSet = true;
@@ -167,8 +171,8 @@ GcFileReader::openRideFile(QFile &file, QStringList &errors) const
 #define add_sample_hp(name) \
     if (present->name) \
         sample.setAttribute(#name, QString("%1").arg(point->name, 0, 'g', 11));
-void
-GcFileReader::writeRideFile(const RideFile *ride, QFile &file) const
+bool
+GcFileReader::writeRideFile(Context *,const RideFile *ride, QFile &file) const
 {
     QDomDocument doc("GoldenCheetah");
     QDomElement root = doc.createElement("ride");
@@ -186,6 +190,10 @@ GcFileReader::writeRideFile(const RideFile *ride, QFile &file) const
     attributes.appendChild(attribute);
     attribute.setAttribute("key", "Device type");
     attribute.setAttribute("value", ride->deviceType());
+    attribute = doc.createElement("attribute");
+    attributes.appendChild(attribute);
+    attribute.setAttribute("key", "Identifier");
+    attribute.setAttribute("value", ride->id());
 
     // write out in metric overrides:
     //  <override>
@@ -242,11 +250,9 @@ GcFileReader::writeRideFile(const RideFile *ride, QFile &file) const
         QDomElement samples = doc.createElement("samples");
         root.appendChild(samples);
         const RideFileDataPresent *present = ride->areDataPresent();
-        assert(present->secs);
         foreach (const RideFilePoint *point, ride->dataPoints()) {
             QDomElement sample = doc.createElement("sample");
             samples.appendChild(sample);
-            assert(present->secs);
             add_sample_hp(secs);
             add_sample(cad);
             add_sample(hr);
@@ -263,9 +269,9 @@ GcFileReader::writeRideFile(const RideFile *ride, QFile &file) const
 
     QByteArray xml = doc.toByteArray(4);
     if (!file.open(QIODevice::WriteOnly))
-        assert(false);
+        return false;
     if (file.write(xml) != xml.size())
-        assert(false);
+        return false;
     file.close();
+    return true;
 }
-

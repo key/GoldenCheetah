@@ -21,6 +21,9 @@
 
 #ifndef _GC_DeviceConfiguration_h
 #define  _GC_DeviceConfiguration_h
+#include "GoldenCheetah.h"
+
+class RealtimeController;
 
 class DeviceConfiguration
 {
@@ -34,8 +37,14 @@ class DeviceConfiguration
                                 // used by ANT to store ANTIDs
                                 // available for use by all devices
 
-    bool isDefaultDownload,     // not implemented yet
-         isDefaultRealtime;     // not implemented yet
+    QString defaultString;      // PHCS for power/heartrate/cadence/speed from this device
+    int  wheelSize;             // set wheel size for each device
+    int  postProcess;           // virtualChannel
+
+    RealtimeController *controller; // can be used to allocate controller for this device
+                                    // although a bit odd, it makes synchronising the config
+                                    // with runtime allocation a bit simpler in traintool
+                                    // we could subclass and add our own, but this aint so bad
 };
 
 class DeviceConfigurations
@@ -52,6 +61,16 @@ class DeviceConfigurations
 
     private:
         QList<DeviceConfiguration> Entries;       // all the Configurations
+
+};
+
+class WheelSize
+{
+    public:
+        const static QStringList RIM_SIZES;
+        const static QStringList TIRE_SIZES;
+
+        static int         calcPerimeter(int rimSizeIndex, int tireSizeIndex);
 
 };
 

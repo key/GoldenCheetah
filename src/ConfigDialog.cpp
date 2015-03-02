@@ -1,89 +1,175 @@
+/*
+ * Copyright (c) 2012 Mark Liversedge (liversedge@gmail.com)
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc., 51
+ * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+ */
+
 #include <QtGui>
 #include <QSettings>
-#include <assert.h>
 
-#include "MainWindow.h"
+#include "Context.h"
+#include "Context.h"
+#include "Athlete.h"
 #include "ConfigDialog.h"
-#include "RealtimeWindow.h"
 #include "Pages.h"
 #include "Settings.h"
 #include "Zones.h"
+#include "HelpWhatsThis.h"
 
+#include "AddDeviceWizard.h"
+#include "MainWindow.h"
 
-/* cyclist dialog protocol redesign:
- * no zones:
- *    calendar disabled
- *    automatically go into "new" mode
- * zone(s) defined:
- *    click on calendar: sets current zone to that associated with date
- * save clicked:
- *    if new mode, create a new zone starting at selected date, or for all dates
- *    if this is only zone.
- * delete clicked:
- *    deletes currently selected zone
- */
+extern bool restarting; //its actually in main.cpp
 
-ConfigDialog::ConfigDialog(QDir _home, Zones *_zones, MainWindow *mainWindow) :
-    mainWindow(mainWindow), zones(_zones)
+ConfigDialog::ConfigDialog(QDir _home, Zones *_zones, Context *context) :
+    home(_home), zones(_zones), context(context)
 {
     setAttribute(Qt::WA_DeleteOnClose);
 
-    home = _home;
+#ifdef Q_OS_MAC
+    QToolBar *head = addToolBar(tr("Preferences"));
+    setMinimumSize(600,540);
+    setUnifiedTitleAndToolBarOnMac(true);
+    head->setFloatable(false);
+    head->setMovable(false);
+#else
+    QToolBar *head = addToolBar(tr("Options"));
+    head->setMovable(false); // oops!
 
-    cyclistPage = new CyclistPage(mainWindow);
+    QFont defaultFont;
+    setMinimumSize(60 * defaultFont.pointSize(),580);   //Change for 53 to 60 - To be decided if also Size for Q_OS_MAC need change
+#endif
 
-    contentsWidget = new QListWidget;
-    contentsWidget->setViewMode(QListView::IconMode);
-    contentsWidget->setIconSize(QSize(96, 84));
-    contentsWidget->setMovement(QListView::Static);
-    contentsWidget->setMinimumWidth(112);
-    contentsWidget->setMaximumWidth(112);
-    //contentsWidget->setMinimumHeight(200);
-    contentsWidget->setSpacing(12);
-    contentsWidget->setUniformItemSizes(true);
+    // center
+    QWidget *spacer = new QWidget(this);
+    spacer->setAutoFillBackground(false);
+    spacer->setSizePolicy(QSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding));
+    head->addWidget(spacer);
 
-    configPage = new ConfigurationPage(mainWindow);
-    devicePage = new DevicePage(this);
-    pagesWidget = new QStackedWidget;
-    pagesWidget->addWidget(configPage);
-    pagesWidget->addWidget(cyclistPage);
-    pagesWidget->addWidget(devicePage);
-    #ifdef GC_HAVE_LIBOAUTH
-    twitterPage = new TwitterPage(this);
-    pagesWidget->addWidget(twitterPage);
-    #endif
+    // icons
+    static QIcon generalIcon(QPixmap(":images/toolbar/GeneralPreferences.png"));
+    static QIcon athleteIcon(QPixmap(":/images/toolbar/user.png"));
+    static QIcon passwordIcon(QPixmap(":/images/toolbar/passwords.png"));
+    static QIcon appearanceIcon(QPixmap(":/images/toolbar/color.png"));
+    static QIcon dataIcon(QPixmap(":/images/toolbar/data.png"));
+    static QIcon metricsIcon(QPixmap(":/images/toolbar/abacus.png"));
+    static QIcon devicesIcon(QPixmap(":/images/devices/kickr.png"));
+
+    // Setup the signal mapping so the right config
+    // widget is displayed when the icon is clicked
+    QSignalMapper *iconMapper = new QSignalMapper(this); // maps each option
+    connect(iconMapper, SIGNAL(mapped(int)), this, SLOT(changePage(int)));
+    head->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+
+    QAction *added;
+
+    // General settings
+    added = head->addAction(generalIcon, tr("General"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 0);
+
+    added =head->addAction(athleteIcon, tr("Athlete"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 1);
+
+    added =head->addAction(passwordIcon, tr("Passwords"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 2);
+
+    added =head->addAction(appearanceIcon, tr("Appearance"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 3);
+
+    added =head->addAction(dataIcon, tr("Data Fields"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 4);
+
+    added =head->addAction(metricsIcon, tr("Metrics"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 5);
+
+    added =head->addAction(devicesIcon, tr("Train Devices"));
+    connect(added, SIGNAL(triggered()), iconMapper, SLOT(map()));
+    iconMapper->setMapping(added, 6);
+
+    // more space
+    spacer = new QWidget(this);
+    spacer->setAutoFillBackground(false);
+    spacer->setSizePolicy(QSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding));
+    head->addWidget(spacer);
+
+
+    pagesWidget = new QStackedWidget(this);
+
+    // create those config pages
+    general = new GeneralConfig(_home, _zones, context);
+    HelpWhatsThis *generalHelp = new HelpWhatsThis(general);
+    general->setWhatsThis(generalHelp->getWhatsThisText(HelpWhatsThis::Preferences_General));
+    pagesWidget->addWidget(general);
+
+    athlete = new AthleteConfig(_home, _zones, context);
+    HelpWhatsThis *athleteHelp = new HelpWhatsThis(athlete);
+    athlete->setWhatsThis(athleteHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_About));
+    pagesWidget->addWidget(athlete);
+
+    password = new PasswordConfig(_home, _zones, context);
+    HelpWhatsThis *passwordHelp = new HelpWhatsThis(password);
+    password->setWhatsThis(passwordHelp->getWhatsThisText(HelpWhatsThis::Preferences_Passwords));
+    pagesWidget->addWidget(password);
+
+    appearance = new AppearanceConfig(_home, _zones, context);
+    HelpWhatsThis *appearanceHelp = new HelpWhatsThis(appearance);
+    appearance->setWhatsThis(appearanceHelp->getWhatsThisText(HelpWhatsThis::Preferences_Appearance));
+    pagesWidget->addWidget(appearance);
+
+    data = new DataConfig(_home, _zones, context);
+    HelpWhatsThis *dataHelp = new HelpWhatsThis(data);
+    data->setWhatsThis(dataHelp->getWhatsThisText(HelpWhatsThis::Preferences_DataFields));
+    pagesWidget->addWidget(data);
+
+    metric = new MetricConfig(_home, _zones, context);
+    HelpWhatsThis *metricHelp = new HelpWhatsThis(metric);
+    metric->setWhatsThis(metricHelp->getWhatsThisText(HelpWhatsThis::Preferences_Metrics));
+    pagesWidget->addWidget(metric);
+
+    device = new DeviceConfig(_home, _zones, context);
+    HelpWhatsThis *deviceHelp = new HelpWhatsThis(device);
+    device->setWhatsThis(deviceHelp->getWhatsThisText(HelpWhatsThis::Preferences_TrainDevices));
+    pagesWidget->addWidget(device);
 
     closeButton = new QPushButton(tr("Close"));
     saveButton = new QPushButton(tr("Save"));
 
-    createIcons();
-    contentsWidget->setCurrentItem(contentsWidget->item(0));
-
-    // connect(closeButton, SIGNAL(clicked()), this, SLOT(reject()));
-    // connect(saveButton, SIGNAL(clicked()), this, SLOT(accept()));
-    connect(closeButton, SIGNAL(clicked()), this, SLOT(accept()));
-
-    // connect the pieces...
-    connect(devicePage->typeSelector, SIGNAL(currentIndexChanged(int)), this, SLOT(changedType(int)));
-    connect(devicePage->addButton, SIGNAL(clicked()), this, SLOT(devaddClicked()));
-    connect(devicePage->delButton, SIGNAL(clicked()), this, SLOT(devdelClicked()));
-    connect(devicePage->pairButton, SIGNAL(clicked()), this, SLOT(devpairClicked()));
-
-    horizontalLayout = new QHBoxLayout;
-    horizontalLayout->addWidget(contentsWidget);
+    QHBoxLayout *horizontalLayout = new QHBoxLayout;
     horizontalLayout->addWidget(pagesWidget, 1);
 
-    buttonsLayout = new QHBoxLayout;
-    buttonsLayout->addStretch(1);
+    QHBoxLayout *buttonsLayout = new QHBoxLayout;
+    buttonsLayout->addStretch();
+    buttonsLayout->setSpacing(5);
     buttonsLayout->addWidget(closeButton);
     buttonsLayout->addWidget(saveButton);
 
-    mainLayout = new QVBoxLayout;
+    QWidget *contents = new QWidget(this);
+    setCentralWidget(contents);
+    contents->setContentsMargins(0,0,0,0);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout;
     mainLayout->addLayout(horizontalLayout);
-    //mainLayout->addStretch(1);
-    //mainLayout->addSpacing(12);
     mainLayout->addLayout(buttonsLayout);
-    setLayout(mainLayout);
+    mainLayout->setSpacing(0);
+    contents->setLayout(mainLayout);
 
     // We go fixed width to ensure a consistent layout for
     // tabs, sub-tabs and internal widgets and lists
@@ -92,228 +178,251 @@ ConfigDialog::ConfigDialog(QDir _home, Zones *_zones, MainWindow *mainWindow) :
 #else
     setWindowTitle(tr("Options"));
 #endif
-    setFixedSize(QSize(800, 600));
+
+    connect(closeButton, SIGNAL(clicked()), this, SLOT(closeClicked()));
+    connect(saveButton, SIGNAL(clicked()), this, SLOT(saveClicked()));
 }
 
-void ConfigDialog::createIcons()
+void ConfigDialog::changePage(int index)
 {
-    QListWidgetItem *configButton = new QListWidgetItem(contentsWidget);
-    configButton->setIcon(QIcon(":/images/config.png"));
-    configButton->setText(tr("Settings"));
-    configButton->setTextAlignment(Qt::AlignHCenter);
-    configButton->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-
-
-    QListWidgetItem *cyclistButton = new QListWidgetItem(contentsWidget);
-    cyclistButton->setIcon(QIcon(":images/cyclist.png"));
-    cyclistButton->setText(tr("Athlete"));
-    cyclistButton->setTextAlignment(Qt::AlignHCenter);
-    cyclistButton->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-
-    QListWidgetItem *realtimeButton = new QListWidgetItem(contentsWidget);
-    realtimeButton->setIcon(QIcon(":images/arduino.png"));
-    realtimeButton->setText(tr("Devices"));
-    realtimeButton->setTextAlignment(Qt::AlignHCenter);
-    realtimeButton->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-
-#ifdef GC_HAVE_LIBOAUTH
-    QListWidgetItem *twitterButton = new QListWidgetItem(contentsWidget);
-    twitterButton->setIcon(QIcon(":images/twitter.png"));
-    twitterButton->setText(tr("Twitter"));
-    twitterButton->setTextAlignment(Qt::AlignHCenter);
-    twitterButton->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-#endif
-
-    connect(contentsWidget,
-            SIGNAL(currentItemChanged(QListWidgetItem *, QListWidgetItem *)),
-            this, SLOT(changePage(QListWidgetItem *, QListWidgetItem*)));
-
-    connect(saveButton, SIGNAL(clicked()), this, SLOT(save_Clicked()));
+    pagesWidget->setCurrentIndex(index);
 }
 
-
-void ConfigDialog::changePage(QListWidgetItem *current, QListWidgetItem *previous)
+void ConfigDialog::closeClicked()
 {
-    if (!current)
-        current = previous;
-
-    pagesWidget->setCurrentIndex(contentsWidget->row(current));
+    // don't save!
+    close();
 }
-
 // if save is clicked, we want to:
 //   new mode:   create a new zone starting at the selected date (which may be null, implying BEGIN
 //   ! new mode: change the CP associated with the present mode
-void ConfigDialog::save_Clicked()
+void ConfigDialog::saveClicked()
 {
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
+    // what changed ?
+    qint32 changed = 0;
 
-    if (configPage->langCombo->currentIndex()==0)
-        settings->setValue(GC_LANG, "en");
-    else if (configPage->langCombo->currentIndex()==1)
-        settings->setValue(GC_LANG, "fr");
-    else if (configPage->langCombo->currentIndex()==2)
-        settings->setValue(GC_LANG, "ja");
+    changed |= general->saveClicked();
+    changed |= athlete->saveClicked();
+    changed |= appearance->saveClicked();
+    changed |= password->saveClicked();
+    changed |= metric->saveClicked();
+    changed |= data->saveClicked();
+    changed |= device->saveClicked();
 
-    if (configPage->unitCombo->currentIndex()==0)
-        settings->setValue(GC_UNIT, "Metric");
-    else if (configPage->unitCombo->currentIndex()==1)
-        settings->setValue(GC_UNIT, "Imperial");
+    hide();
 
-    settings->setValue(GC_ALLRIDES_ASCENDING, configPage->allRidesAscending->checkState());
-    settings->setValue(GC_GARMIN_SMARTRECORD, configPage->garminSmartRecord->checkState());
-    settings->setValue(GC_GARMIN_HWMARK, configPage->garminHWMarkedit->text());
-    settings->setValue(GC_CRANKLENGTH, configPage->crankLengthCombo->currentText());
-    settings->setValue(GC_BIKESCOREDAYS, configPage->BSdaysEdit->text());
-    settings->setValue(GC_BIKESCOREMODE, configPage->bsModeCombo->currentText());
-    settings->setValue(GC_WORKOUTDIR, configPage->workoutDirectory->text());
-    settings->setValue(GC_INITIAL_STS, cyclistPage->perfManStart->text());
-    settings->setValue(GC_INITIAL_LTS, cyclistPage->perfManStart->text());
-    settings->setValue(GC_STS_DAYS, cyclistPage->perfManSTSavg->text());
-    settings->setValue(GC_LTS_DAYS, cyclistPage->perfManLTSavg->text());
-    settings->setValue(GC_SB_TODAY, (int) cyclistPage->showSBToday->isChecked());
+    // did the home directory change?
+    QString shome = appsettings->value(this, GC_HOMEDIR).toString();
+    if (shome != general->generalPage->athleteWAS || QFileInfo(shome).absoluteFilePath() != QFileInfo(home.absolutePath()).absolutePath()) {
 
-    // set default stress names if not set:
-    settings->setValue(GC_STS_NAME, settings->value(GC_STS_NAME,tr("Short Term Stress")));
-    settings->setValue(GC_STS_ACRONYM, settings->value(GC_STS_ACRONYM,tr("STS")));
-    settings->setValue(GC_LTS_NAME, settings->value(GC_LTS_NAME,tr("Long Term Stress")));
-    settings->setValue(GC_LTS_ACRONYM, settings->value(GC_LTS_ACRONYM,tr("LTS")));
-    settings->setValue(GC_SB_NAME, settings->value(GC_SB_NAME,tr("Stress Balance")));
-    settings->setValue(GC_SB_ACRONYM, settings->value(GC_SB_ACRONYM,tr("SB")));
+        // are you sure you want to change the location of the athlete library?
+        // if so we will restart, if not I'll revert to current directory
+        QMessageBox msgBox;
+        msgBox.setText(tr("You changed the location of the athlete library"));
+        msgBox.setInformativeText(tr("This is where all new athletes and their files "
+                                  "will now be stored.\n\nCurrent athlete data will no longer be "
+                                  "available and GoldenCheetah will need to restart for the change to take effect."
+                                  "\n\nDo you want to apply and restart GoldenCheetah?"));
 
-    // Save Cyclist page stuff
-    cyclistPage->saveClicked();
+        // we want our own buttons...
+        msgBox.addButton(tr("No, Keep current"), QMessageBox::RejectRole);
+        msgBox.addButton(tr("Yes, Apply and Restart"), QMessageBox::AcceptRole);
+        msgBox.setDefaultButton(QMessageBox::Abort);
 
-    // save interval metrics and ride data pages
-    configPage->saveClicked();
+        if (msgBox.exec() == 1) { // accept!
 
-#ifdef GC_HAVE_LIBOAUTH
-    //Call Twitter Save Dialog to get Access Token
-    twitterPage->saveClicked();
-#endif
-    // Save the device configuration...
-    DeviceConfigurations all;
-    all.writeConfig(devicePage->deviceListModel->Configuration);
+            // lets restart
+            restarting = true;
 
-    // Tell MainWindow we changed config, so it can emit the signal
-    // configChanged() to all its children
-    mainWindow->notifyConfigChanged();
+            // close all the mainwindows
+            foreach(MainWindow *m, mainwindows) m->byebye();
 
-    // close
-    accept();
+            // NOTE: we don't notifyConfigChanged() now because the context
+            //       has been zapped along with the windows we need to get out
+            //       as quickly as possible.
+            close();
+            return; 
+
+        } else {
+
+            // revert to current home and let everyone know
+            appsettings->setValue(GC_HOMEDIR, QFileInfo(home.absolutePath()).absolutePath());
+        }
+
+    } 
+
+    // we're done.
+    context->notifyConfigChanged(changed);
+    close();
 }
 
-//
-// DEVICE CONFIG STUFF
-//
-
-void
-ConfigDialog::changedType(int)
+// GENERAL CONFIG
+GeneralConfig::GeneralConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
 {
-// THIS CODE IS DISABLED FOR THIS RELEASE XXX
-//    // disable/enable default checkboxes
-//    if (devicePage->devices.at(index).download == false) {
-//        devicePage->isDefaultDownload->setEnabled(false);
-//        devicePage->isDefaultDownload->setCheckState(Qt::Unchecked);
-//    } else {
-//        devicePage->isDefaultDownload->setEnabled(true);
-//    }
-//    if (devicePage->devices.at(index).realtime == false) {
-//        devicePage->isDefaultRealtime->setEnabled(false);
-//        devicePage->isDefaultRealtime->setCheckState(Qt::Unchecked);
-//    } else {
-//        devicePage->isDefaultRealtime->setEnabled(true);
-//    }
-    devicePage->setConfigPane();
+    generalPage = new GeneralPage(context);
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(generalPage);
+
+    layout->setSpacing(0);
+    setContentsMargins(0,0,0,0);
 }
 
-void
-ConfigDialog::devaddClicked()
+qint32 GeneralConfig::saveClicked()
 {
-    DeviceConfiguration add;
-    DeviceTypes Supported;
-
-    // get values from the gui elements
-    add.name = devicePage->deviceName->displayText();
-    add.type = devicePage->typeSelector->itemData(devicePage->typeSelector->currentIndex()).toInt();
-    add.portSpec = devicePage->deviceSpecifier->displayText();
-    add.deviceProfile = devicePage->deviceProfile->displayText();
-
-    // NOT IMPLEMENTED IN THIS RELEASE XXX
-    //add.isDefaultDownload = devicePage->isDefaultDownload->isChecked() ? true : false;
-    //add.isDefaultRealtime = devicePage->isDefaultDownload->isChecked() ? true : false;
-
-    // Validate the name
-    QRegExp nameSpec(".+");
-    if (nameSpec.exactMatch(add.name) == false) {
-        QMessageBox::critical(0, "Invalid Device Name",
-                QString("Device Name should be non-blank"));
-        return ;
-    }
-
-    // Validate the portSpec
-    QRegExp antSpec("[^:]*:[^:]*");         // ip:port same as TCP ... for now...
-    QRegExp tcpSpec("[^:]*:[^:]*");         // ip:port
-#ifdef WIN32
-    QRegExp serialSpec("COM[0-9]*");      // COMx for WIN32, /dev/* for others
-#else
-    QRegExp serialSpec("/dev/.*");      // COMx for WIN32, /dev/* for others
-#endif
-
-    // check the portSpec is valid, based upon the connection type
-    switch (Supported.getType(add.type).connector) {
-        case DEV_ANT :
-            if (antSpec.exactMatch(add.portSpec) == false) {
-                QMessageBox::critical(0, "Invalid Port Specification",
-                QString("For ANT devices the specifier must be ") +
-                        "hostname:portnumber");
-                return ;
-            }
-            break;
-        case DEV_SERIAL :
-            if (serialSpec.exactMatch(add.portSpec) == false) {
-                QMessageBox::critical(0, "Invalid Port Specification",
-                QString("For Serial devices the specifier must be ") +
-#ifdef WIN32
-                        "COMn"
-#else
-                        "/dev/xxxxx"
-#endif
-                );
-                return ;
-            }
-            break;
-        case DEV_TCP :
-            if (tcpSpec.exactMatch(add.portSpec) == false) {
-                QMessageBox::critical(0, "Invalid Port Specification",
-                QString("For TCP streaming devices the specifier must be ") +
-                        "hostname:portnumber");
-                return ;
-            }
-            break;
-    }
-
-    devicePage->deviceListModel->add(add);
+    return generalPage->saveClicked();
 }
 
-void
-ConfigDialog::devdelClicked()
+// ATHLETE CONFIG
+AthleteConfig::AthleteConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
 {
-    devicePage->deviceListModel->del();
+    // the widgets
+    athletePage = new RiderPage(this, context);
+    HelpWhatsThis *athleteHelp = new HelpWhatsThis(athletePage);
+    athletePage->setWhatsThis(athleteHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_About));
+
+    zonePage = new ZonePage(context);
+    HelpWhatsThis *zoneHelp = new HelpWhatsThis(zonePage);
+    zonePage->setWhatsThis(zoneHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_TrainingZones_Power));
+
+    hrZonePage = new HrZonePage(context);
+    HelpWhatsThis *hrZoneHelp = new HelpWhatsThis(hrZonePage);
+    hrZonePage->setWhatsThis(hrZoneHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_TrainingZones_HR));
+
+    paceZonePage = new PaceZonePage(context);
+    HelpWhatsThis *paceZoneHelp = new HelpWhatsThis(paceZonePage);
+    paceZonePage->setWhatsThis(paceZoneHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_TrainingZones_Pace));
+
+    autoImportPage = new AutoImportPage(context);
+    HelpWhatsThis *autoImportHelp = new HelpWhatsThis(autoImportPage);
+    autoImportPage->setWhatsThis(autoImportHelp->getWhatsThisText(HelpWhatsThis::Preferences_Athlete_Autoimport));
+
+    setContentsMargins(0,0,0,0);
+    QHBoxLayout *mainLayout = new QHBoxLayout(this);
+    mainLayout->setSpacing(0);
+    mainLayout->setContentsMargins(0,0,0,0);
+
+    QTabWidget *tabs = new QTabWidget(this);
+    tabs->addTab(athletePage, tr("About"));
+    tabs->addTab(zonePage, tr("Power Zones"));
+    tabs->addTab(hrZonePage, tr("Heartrate Zones"));
+    tabs->addTab(paceZonePage, tr("Pace Zones"));
+    tabs->addTab(autoImportPage, tr("Auto Import"));
+
+    mainLayout->addWidget(tabs);
 }
 
-void
-ConfigDialog::devpairClicked()
+qint32 AthleteConfig::saveClicked()
 {
-    DeviceConfiguration add;
+    qint32 state = 0;
 
-    // get values from the gui elements
-    add.name = devicePage->deviceName->displayText();
-    add.type = devicePage->typeSelector->itemData(devicePage->typeSelector->currentIndex()).toInt();
-    add.portSpec = devicePage->deviceSpecifier->displayText();
-    add.deviceProfile = devicePage->deviceProfile->displayText();
+    state |= athletePage->saveClicked();
+    state |= zonePage->saveClicked();
+    state |= hrZonePage->saveClicked();
+    state |= paceZonePage->saveClicked();
+    state |= autoImportPage->saveClicked();
 
-    QProgressDialog *progress = new QProgressDialog("Looking for Devices...", "Abort Scan", 0, 200, this);
-    progress->setWindowModality(Qt::WindowModal);
+    return state;
+}
 
-    devicePage->pairClicked(&add, progress);
+// APPEARANCE CONFIG
+AppearanceConfig::AppearanceConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
+{
+    appearancePage = new ColorsPage(this);
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(appearancePage);
+
+    layout->setSpacing(0);
+    setContentsMargins(0,0,0,0);
+}
+
+qint32 AppearanceConfig::saveClicked()
+{
+    return appearancePage->saveClicked();
+}
+
+// PASSWORD CONFIG
+PasswordConfig::PasswordConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
+{
+    passwordPage = new CredentialsPage(this, context);
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(passwordPage);
+
+    layout->setSpacing(0);
+    setContentsMargins(0,0,0,0);
+}
+
+qint32 PasswordConfig::saveClicked()
+{
+    return passwordPage->saveClicked();
+}
+
+// METADATA CONFIG
+DataConfig::DataConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
+{
+    dataPage = new MetadataPage(context);
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(dataPage);
+
+    layout->setSpacing(0);
+    setContentsMargins(0,0,0,0);
+}
+
+qint32 DataConfig::saveClicked()
+{
+    return dataPage->saveClicked();
+}
+
+// GENERAL CONFIG
+MetricConfig::MetricConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
+{
+    // the widgets
+    bestsPage = new BestsMetricsPage(this);
+    intervalsPage = new IntervalMetricsPage(this);
+    summaryPage = new SummaryMetricsPage(this);
+
+    setContentsMargins(0,0,0,0);
+    QHBoxLayout *mainLayout = new QHBoxLayout(this);
+    mainLayout->setSpacing(0);
+    mainLayout->setContentsMargins(0,0,0,0);
+
+    QTabWidget *tabs = new QTabWidget(this);
+    tabs->addTab(bestsPage, tr("Bests"));
+    tabs->addTab(summaryPage, tr("Summary"));
+    tabs->addTab(intervalsPage, tr("Intervals"));
+
+    mainLayout->addWidget(tabs);
+}
+
+qint32 MetricConfig::saveClicked()
+{
+    qint32 state = 0;
+
+    state |= bestsPage->saveClicked();
+    state |= summaryPage->saveClicked();
+    state |= intervalsPage->saveClicked();
+
+    return state;
+}
+
+// GENERAL CONFIG
+DeviceConfig::DeviceConfig(QDir home, Zones *zones, Context *context) :
+    home(home), zones(zones), context(context)
+{
+    devicePage = new DevicePage(this, context);
+    QVBoxLayout *layout = new QVBoxLayout(this);
+    layout->addWidget(devicePage);
+
+    layout->setSpacing(0);
+    setContentsMargins(0,0,0,0);
+}
+
+qint32 DeviceConfig::saveClicked()
+{
+    return devicePage->saveClicked();
 }

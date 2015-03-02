@@ -17,6 +17,7 @@
  */
 
 #include "ToolsDialog.h"
+#include "HelpWhatsThis.h"
 #include <QtGui>
 
 typedef QDoubleSpinBox* QDoubleSpinBoxPtr;
@@ -59,8 +60,14 @@ QHBoxLayout *setupMinsSecs(ToolsDialog *dialog,
 
 ToolsDialog::ToolsDialog(QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle(tr("Critical Power Calculator"));
+    setWindowTitle(tr("Critical Power Estimator"));
+
+    HelpWhatsThis *help = new HelpWhatsThis(this);
+    this->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::MenuBar_Tools_CP_EST));
+
     setAttribute(Qt::WA_DeleteOnClose);
+
+    setFixedSize(300, 240);
 
     QVBoxLayout *mainVBox = new QVBoxLayout(this);
 
@@ -71,18 +78,34 @@ ToolsDialog::ToolsDialog(QWidget *parent) : QDialog(parent)
     mainVBox->addWidget(new QLabel(tr("Your best long effort (15-60 min):")));
     mainVBox->addLayout(setupMinsSecs(this, longMinsSpinBox, longSecsSpinBox,
                                       longWattsSpinBox, 60.0, 20.0));
+    mainVBox->addStretch();
 
     QHBoxLayout *cpHBox = new QHBoxLayout;
+    cpHBox->addStretch();
     cpHBox->addWidget(new QLabel(tr("Your critical power:")));
     txtCP = new QLineEdit(this);
     txtCP->setAlignment(Qt::AlignRight);
     txtCP->setReadOnly(true);
-    cpHBox->addWidget(txtCP);
+    cpHBox->addWidget(txtCP, Qt::AlignLeft);
+    cpHBox->addStretch();
     mainVBox->addLayout(cpHBox);
+
+    QHBoxLayout *wpHBox = new QHBoxLayout;
+    wpHBox->addStretch();
+    wpHBox->addWidget(new QLabel(tr("Your W':")));
+    txtWP = new QLineEdit(this);
+    txtWP->setAlignment(Qt::AlignRight);
+    txtWP->setReadOnly(true);
+    wpHBox->addWidget(txtWP, Qt::AlignLeft);
+    wpHBox->addStretch();
+    mainVBox->addLayout(wpHBox);
+
+    mainVBox->addStretch();
 
     QHBoxLayout *buttonHBox = new QHBoxLayout;
     btnCalculate = new QPushButton(this);
-    btnCalculate->setText(tr("Calculate CP"));
+    btnCalculate->setText(tr("Estimate CP"));
+    buttonHBox->addStretch();
     buttonHBox->addWidget(btnCalculate);
     btnOK = new QPushButton(this);
     btnOK->setText(tr("Done"));
@@ -110,5 +133,9 @@ void ToolsDialog::on_btnCalculate_clicked()
         (longSecs * longWatts - shortSecs * shortWatts)
         / (longSecs - shortSecs);
     txtCP->setText(QString("%1 watts").arg(static_cast<int>(round(CP))));
+
+    double Wprime = ((shortSecs * (shortWatts-CP)) +
+                    (longSecs * (longWatts-CP))) /2;
+    txtWP->setText(QString("%1 kJ").arg(static_cast<int>(round(Wprime/1000))));
 }
 

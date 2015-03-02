@@ -16,119 +16,334 @@
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#include <assert.h>
 #include <QApplication>
 #include <QtGui>
+#include <QFile>
+#include <QWebSettings>
+#include <QMessageBox>
 #include "ChooseCyclistDialog.h"
 #include "MainWindow.h"
 #include "Settings.h"
+#include "TrainDB.h"
+#include "Colors.h"
 
-// BLECK - homedir passing via global becuase ridefile is pure virtual and
-//         cannot pass with current definition -- Sean can advise!!
-extern QString WKO_HOMEDIR;
+#include "GcUpgrade.h"
+
+// redirect errors to `home'/goldencheetah.log
+// sadly, no equivalent on Windows
+#ifndef WIN32
+#include "stdio.h"
+#include "unistd.h"
+void nostderr(QString dir)
+{
+    // redirect stderr to a file
+    QFile *fp = new QFile(QString("%1/goldencheetah.log").arg(dir));
+    if (fp->open(QIODevice::WriteOnly|QIODevice::Truncate) == true) {
+        close(2);
+        if(dup(fp->handle()) == -1) fprintf(stderr, "GoldenCheetah: cannot redirect stderr\n");
+    } else {
+        fprintf(stderr, "GoldenCheetah: cannot redirect stderr\n");
+    }
+}
+#endif
+
+#ifdef Q_OS_MAC
+#include "QtMacSegmentedButton.h" // for cocoa initialiser
+#endif
+
+#ifdef Q_OS_X11
+#include <X11/Xlib.h>
+#endif
+
+#if QT_VERSION > 0x050000
+#include <QStandardPaths>
+#endif
+
+bool restarting = false;
+
+// root directory shared by all
+QString gcroot;
 
 int
 main(int argc, char *argv[])
 {
-    QApplication app(argc, argv);
+    int ret=2; // return code from qapplication, default to error
 
-    //this is the path within the current directory where GC will look for
-    //files to allow USB stick support
-    QString localLibraryPath="Library/GoldenCheetah";
+    //
+    // PROCESS COMMAND LINE SWITCHES
+    //
 
-    //this is the path that used to be used for all platforms
-    //now different platforms will use their own path
-    //this path is checked first to make things easier for long-time users
-    QString oldLibraryPath=QDir::home().path()+"/Library/GoldenCheetah";
+    // snaffle arguments into a stringlist we can play with into sargs
+    // and only keep non-switch args in the args string list
+    QStringList sargs, args;
+    for (int i=0; i<argc; i++) sargs << argv[i];
 
-    //these are the new platform-dependent library paths
-#if defined(Q_OS_MACX)
-    QString libraryPath="Library/GoldenCheetah";
-#elif defined(Q_OS_WIN)
-    QString libraryPath=QDesktopServices::storageLocation(QDesktopServices::DataLocation) + "/GoldenCheetah";
+#ifdef GC_DEBUG
+    bool debug = true;
 #else
-    // Q_OS_LINUX et al
-    QString libraryPath=".goldencheetah";
+    bool debug = false;
 #endif
 
-    //First check to see if the Library folder exists where the executable is (for USB sticks)
-    QDir home = QDir();
-    //if it does, create an ini file for settings and cd into the library
-    if(home.exists(localLibraryPath))
-    {
-         home.cd(localLibraryPath);
-    }
-    //if it does not exist, let QSettings handle storing settings
-    //also cd to the home directory and look for libraries
-    else
-    {
-        home = QDir::home();
-        //check if this users previously stored files in the old library path
-        //if they did, use the existing library
-        if (home.exists(oldLibraryPath))
-        {
-            home.cd(oldLibraryPath);
+    bool help = false;
+
+    // honour command line switches
+    foreach (QString arg, sargs) {
+
+        // help or version requested
+        if (arg == "--help" || arg == "--version") {
+
+            help = true;
+            fprintf(stderr, "GoldenCheetah %s (%d)\nusage: GoldenCheetah [[directory] athlete]\n\n", VERSION_STRING, VERSION_LATEST);
+            fprintf(stderr, "--help or --version to print this message and exit\n");
+#ifdef GC_DEBUG
+            fprintf(stderr, "--debug             to turn on redirection of messages to goldencheetah.log [debug build]\n");
+#else
+            fprintf(stderr, "--debug             to direct diagnostic messages to the terminal instead of goldencheetah.log\n");
+#endif
+            fprintf (stderr, "\nSpecify the folder and/or athlete to open on startup\n");
+            fprintf(stderr, "If no parameters are passed it will reopen the last athlete.\n\n");
+
+        } else if (arg == "--debug") {
+
+#ifdef GC_DEBUG
+            // debug, so don't redirect stderr!
+            debug = false;
+#else
+            debug = true;
+#endif
+
+        } else {
+
+            // not switches !
+            args << arg;
         }
-        //otherwise use the new library path
-        else
-        {
-            //first create the path if it does not exist
-            if (!home.exists(libraryPath))
-            {
-                if (!home.mkpath(libraryPath))
-                {
-                    qDebug()<<"Failed to create library path\n";
-                    assert(false);
+    }
+
+    // help or version printed so just exit now
+    if (help) {
+        exit(0);
+    }
+
+    //
+    // INITIALISE ONE TIME OBJECTS
+    //
+
+#ifdef Q_OS_X11
+    XInitThreads();
+#endif
+
+#ifdef Q_OS_MACX
+    if ( QSysInfo::MacintoshVersion > QSysInfo::MV_10_8 )
+    {
+        // fix Mac OS X 10.9 (mavericks) font issue
+        // https://bugreports.qt-project.org/browse/QTBUG-32789
+        QFont::insertSubstitution("LucidaGrande", "Lucida Grande");
+    }
+#endif
+
+    // create the application -- only ever ONE regardless of restarts
+    QApplication *application = new QApplication(argc, argv);
+
+#ifdef Q_OS_MAC
+    // get an autorelease pool setup
+    static CocoaInitializer cocoaInitializer;
+#endif
+
+    // set defaultfont
+    QFont font;
+    font.fromString(appsettings->value(NULL, GC_FONT_DEFAULT, QFont().toString()).toString());
+    font.setPointSize(appsettings->value(NULL, GC_FONT_DEFAULT_SIZE, 10).toInt());
+    application->setFont(font); // set default font
+
+    // set default colors
+    GCColor::setupColors();
+    GCColor::readConfig();
+
+    //
+    // OPEN FIRST MAINWINDOW
+    //
+    do {
+
+        // lets not restart endlessly
+        restarting = false;
+
+        //this is the path within the current directory where GC will look for
+        //files to allow USB stick support
+        QString localLibraryPath="Library/GoldenCheetah";
+
+        //this is the path that used to be used for all platforms
+        //now different platforms will use their own path
+        //this path is checked first to make things easier for long-time users
+        QString oldLibraryPath=QDir::home().canonicalPath()+"/Library/GoldenCheetah";
+
+        //these are the new platform-dependent library paths
+#if defined(Q_OS_MACX)
+        QString libraryPath="Library/GoldenCheetah";
+#elif defined(Q_OS_WIN)
+#if QT_VERSION > 0x050000 // windows and qt5
+        QStringList paths=QStandardPaths::standardLocations(QStandardPaths::DataLocation);
+        QString libraryPath = paths.at(0); 
+#else // windows not qt5
+        QString libraryPath=QDesktopServices::storageLocation(QDesktopServices::DataLocation) + "/GoldenCheetah";
+#endif // qt5
+#else // not windows or osx (must be Linux or OpenBSD)
+        // Q_OS_LINUX et al
+        QString libraryPath=".goldencheetah";
+#endif //
+
+        // or did we override in settings?
+        QString sh;
+        if ((sh=appsettings->value(NULL, GC_HOMEDIR, "").toString()) != QString("")) localLibraryPath = sh;
+
+        // lets try the local library we've worked out...
+        QDir home = QDir();
+        if(QDir(localLibraryPath).exists() || home.exists(localLibraryPath)) {
+
+            home.cd(localLibraryPath);
+
+        } else {
+
+            // YIKES !! The directory we should be using doesn't exist!
+            home = QDir::home();
+            if (home.exists(oldLibraryPath)) { // there is an old style path, lets fo there
+                home.cd(oldLibraryPath);
+            } else {
+
+                if (!home.exists(libraryPath)) {
+                    if (!home.mkpath(libraryPath)) {
+
+                        // tell user why we aborted !
+                        QMessageBox::critical(NULL, "Exiting", QString("Cannot create library directory (%1)").arg(libraryPath));
+                        exit(0);
+                    }
+                }
+                home.cd(libraryPath);
+            }
+        }
+
+        // set global root directory
+        gcroot = home.canonicalPath();
+
+        // now redirect stderr
+#ifndef WIN32
+        if (!debug) nostderr(home.canonicalPath());
+#endif
+
+        // install QT Translator to enable QT Dialogs translation
+        // we may have restarted JUST to get this!
+        QTranslator qtTranslator;
+        qtTranslator.load("qt_" + QLocale::system().name(), QLibraryInfo::location(QLibraryInfo::TranslationsPath));
+        application->installTranslator(&qtTranslator);
+
+        // Language setting (default to system locale)
+        QVariant lang = appsettings->value(NULL, GC_LANG, QLocale::system().name());
+
+        // Load specific translation
+        QTranslator gcTranslator;
+        gcTranslator.load(":translations/gc_" + lang.toString() + ".qm");
+        application->installTranslator(&gcTranslator);
+
+        // Initialize metrics once the translator is installed
+        RideMetricFactory::instance().initialize();
+
+        // Initialize global registry once the translator is installed
+        GcWindowRegistry::initialize();
+
+        // initialise the trainDB
+        trainDB = new TrainDB(home);
+
+        // lets do what the command line says ...
+        QVariant lastOpened;
+        if(args.count() == 2) { // $ ./GoldenCheetah Mark
+
+            // athlete
+            lastOpened = args.at(1);
+
+        } else if (args.count() == 3) { // $ ./GoldenCheetah ~/Athletes Mark
+
+            // first parameter is a folder that exists?
+            if (QFileInfo(args.at(1)).isDir()) {
+                home.cd(args.at(1));
+            }
+
+            // folder and athlete
+            lastOpened = args.at(2);
+
+        } else {
+
+            // no parameters passed lets open the last athlete we worked with
+            lastOpened = appsettings->value(NULL, GC_SETTINGS_LAST);
+
+            // but hang on, did they crash? if so we need to open with a menu
+            if(appsettings->cvalue(lastOpened.toString(), GC_SAFEEXIT, true).toBool() != true)
+                lastOpened = QVariant();
+            
+        }
+
+        // lets attempt to open as asked/remembered
+        bool anyOpened = false;
+        if (lastOpened != QVariant()) {
+            QStringList list = lastOpened.toStringList();
+            QStringListIterator i(list);
+            while (i.hasNext()) {
+                QString cyclist = i.next();
+                if (home.cd(cyclist)) {
+                    GcUpgrade v3;
+                    if (v3.upgradeConfirmedByUser(home)) {
+                        MainWindow *mainWindow = new MainWindow(home);
+                        mainWindow->show();
+                        mainWindow->ridesAutoImport();
+                        home.cdUp();
+                        anyOpened = true;
+                    } else {
+                        delete trainDB;
+                        return ret;
+                    }
                 }
             }
-            home.cd(libraryPath);
         }
-    }
-    boost::shared_ptr<QSettings> settings;
-    settings = GetApplicationSettings();
 
-    // Language setting
-    QVariant lang = settings->value(GC_LANG);
-    // Load specific translation
-    QTranslator gcTranslator;
-    gcTranslator.load(":translations/gc_" + lang.toString() + ".qm");
-    app.installTranslator(&gcTranslator);
+        // ack, didn't manage to open an athlete
+        // and the upgradeWarning was
+        // lets ask the user which / create a new one
+        if (!anyOpened) {
+            ChooseCyclistDialog d(home, true);
+            d.setModal(true);
 
-    QVariant lastOpened = settings->value(GC_SETTINGS_LAST);
-    QVariant unit = settings->value(GC_UNIT);
-    double crankLength = settings->value(GC_CRANKLENGTH).toDouble();
-    if(crankLength<=0) {
-       settings->setValue(GC_CRANKLENGTH,172.5);
-    }
+            // choose cancel?
+            if ((ret=d.exec()) != QDialog::Accepted) {
+                delete trainDB;
+                return ret;
+            }
 
-    bool anyOpened = false;
-    if (lastOpened != QVariant()) {
-        QStringList list = lastOpened.toStringList();
-        QStringListIterator i(list);
-        while (i.hasNext()) {
-            QString cyclist = i.next();
-            if (home.cd(cyclist)) {
-                // used by WkoRideFileReader to store notes
-                WKO_HOMEDIR = home.absolutePath();
+            // chosen, so lets get the choice..
+            home.cd(d.choice());
+            if (!home.exists()) {
+                delete trainDB;
+                exit(0);
+            }
+
+            // .. and open a mainwindow
+            GcUpgrade v3;
+            if (v3.upgradeConfirmedByUser(home)) {
                 MainWindow *mainWindow = new MainWindow(home);
                 mainWindow->show();
-                home.cdUp();
-                anyOpened = true;
+                mainWindow->ridesAutoImport();
+            } else {
+                delete trainDB;
+                return ret;
             }
         }
-    }
-    if (!anyOpened) {
-        ChooseCyclistDialog d(home, true);
-        d.setModal(true);
-        if (d.exec() != QDialog::Accepted)
-            return 0;
-        home.cd(d.choice());
-        if (!home.exists())
-            assert(false);
-        // used by WkoRideFileReader to store notes
-        WKO_HOMEDIR = home.absolutePath();
-        MainWindow *mainWindow = new MainWindow(home);
-        mainWindow->show();
-    }
-    return app.exec();
+
+        ret=application->exec();
+
+        // close trainDB
+        delete trainDB;
+
+        // clear web caches (stop warning of WebKit leaks)
+        QWebSettings::clearMemoryCaches();
+
+    } while (restarting);
+
+    return ret;
 }

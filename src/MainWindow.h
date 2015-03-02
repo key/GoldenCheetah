@@ -1,16 +1,17 @@
-/* 
+/*
  * Copyright (c) 2006 Sean C. Rhea (srhea@srhea.net)
+ * Copyright (c) 2012 Mark Liversedge (liversedge@gmail.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -18,228 +19,240 @@
 
 #ifndef _GC_MainWindow_h
 #define _GC_MainWindow_h 1
+#include "GoldenCheetah.h"
 
 #include <QDir>
 #include <QSqlDatabase>
 #include <QtGui>
-#include <qwt_plot.h>
-#include <qwt_plot_curve.h>
+#include <QMainWindow>
+#include <QStackedWidget>
 #include "RideItem.h"
-#include "IntervalItem.h"
-#include "QuarqdClient.h"
-#include <boost/shared_ptr.hpp>
+#include "TimeUtils.h"
+#include "DragBar.h"
 
-class AerolabWindow;
-class GoogleMapControl;
-class AllPlotWindow;
-class CriticalPowerWindow;
-class HistogramWindow;
-class PfPvWindow;
-class QwtPlotPanner;
-class QwtPlotPicker;
-class QwtPlotZoomer;
-class LTMWindow;
-class MetricAggregator;
-class ModelWindow;
-class RealtimeWindow;
-class RideFile;
-class RideMetadata;
-class WeeklySummaryWindow;
-class Zones;
-class RideCalendar;
-class PerformanceManagerWindow;
-class RideSummaryWindow;
-class ViewSelection;
-class TrainWindow;
-class RideEditor;
+#ifdef Q_OS_MAC
+// What versions are supported by this SDK?
+#include <AvailabilityMacros.h>
+#endif
 
-class MainWindow : public QMainWindow 
+class QTFullScreen;
+class QtMacSegmentedButton;
+class QtMacButton;
+class GcToolBar;
+class GcScopeBar;
+class Library;
+class QtSegmentControl;
+class SaveSingleDialogWidget;
+class ChooseCyclistDialog;
+class SearchFilterBox;
+
+class MainWindow;
+class Athlete;
+class Context;
+class Tab;
+
+extern QList<MainWindow *> mainwindows; // keep track of all the MainWindows we have open
+extern QDesktopWidget *desktop;         // how many screens / res etc
+extern QString gcroot;                  // root directory for gc
+
+class MainWindow : public QMainWindow
 {
     Q_OBJECT
+    G_OBJECT
 
     public:
+
         MainWindow(const QDir &home);
-        void addRide(QString name, bool bSelect=true);
-        void removeCurrentRide();
-        const RideFile *currentRide();
-        const RideItem *currentRideItem() { return ride; }
-        const QTreeWidgetItem *allRideItems() { return allRides; }
-        const QTreeWidgetItem *allIntervalItems() { return allIntervals; }
-        QTreeWidget *intervalTreeWidget() { return intervalWidget; }
-        QTreeWidgetItem *mutableIntervalItems() { return allIntervals; }
-	void getBSFactors(double &timeBS, double &distanceBS,
-                          double &timeDP, double &distanceDP);
-        QDir home;
-        void setCriticalPower(int cp);
+        ~MainWindow(); // temp to zap db - will move to tab //
 
-        const Zones *zones() const { return zones_; }
-        const HrZones *hrZones() const { return hrZones_; }
-
-        void updateRideFileIntervals();
-        void saveSilent(RideItem *);
-        bool saveRideSingleDialog(RideItem *);
-        RideItem *rideItem() const { return ride; }
-        const QWidget *activeTab() const { return tabWidget->currentWidget(); }
-        QTextEdit *rideNotesWidget() { return rideNotes; }
-        RideMetadata *rideMetadata() { return _rideMetadata; }
-
-        void notifyConfigChanged(); // used by ConfigDialog to notify MainWindow
-                                    // when config has changed - and to get a
-                                    // signal emitted to notify its children
-        void notifyRideSelected();  // used by RideItem to notify when
-                                    // rideItem date/time changes
-        void notifyRideClean() { rideClean(); }
-        void notifyRideDirty() { rideDirty(); }
-        void selectView(int);
-
-        // db connections to cyclistdir/metricDB - one per active MainWindow
-        QSqlDatabase db;
-        int session;
-        bool isclean;
+        void byebye() { close(); } // go bye bye for a restart
+        bool init; // if constructor has completed set to true
 
     protected:
 
-        Zones *zones_;
-        HrZones *hrZones_;
+        // used by ChooseCyclistDialog to see which athletes
+        // have already been opened
+        friend class ::ChooseCyclistDialog;
+        QMap<QString,Tab*> tabs;
 
         virtual void resizeEvent(QResizeEvent*);
         virtual void moveEvent(QMoveEvent*);
         virtual void closeEvent(QCloseEvent*);
         virtual void dragEnterEvent(QDragEnterEvent *);
         virtual void dropEvent(QDropEvent *);
-    
-    signals:
 
-        void rideSelected();
-        void intervalSelected();
-        void intervalsChanged();
-        void zonesChanged();
-        void configChanged();
-        void viewChanged(int);
-        void rideAdded(RideItem *);
-        void rideDeleted(RideItem *);
-        void rideDirty();
-        void rideClean();
+    public slots:
 
-    private slots:
-        void tabViewTriggered(bool);
-        void rideTreeWidgetSelectionChanged();
-        void intervalTreeWidgetSelectionChanged();
-        void leftLayoutMoved();
-        void splitterMoved();
-        void summarySplitterMoved();
-        void newCyclist();
-        void openCyclist();
+        bool eventFilter(QObject*,QEvent*);
+
+        // GUI
+#ifndef Q_OS_MAC
+        void toggleFullScreen();
+#endif
+        void aboutDialog();
+        void helpWindow();
+        void helpView();
+        void logBug();
+        void support();
+        void actionClicked(int);
+
+        // open and closing windows and tabs
+        void closeAll();    // close all windows and tabs
+
+        void setOpenWindowMenu(); // set the Open Window menu
+        void newCyclistWindow();  // create a new Cyclist
+        void openWindow(QString name);
+        void closeWindow();
+
+        void setOpenTabMenu(); // set the Open Tab menu
+        void newCyclistTab();  // create a new Cyclist
+        void openTab(QString name);
+        void closeTabClicked(int index); // user clicked to close tab
+        bool closeTab();       // close current, might not if the user 
+                               // changes mind if there are unsaved changes.
+        void removeTab(Tab*);  // remove without question
+
+        void switchTab(int index); // for switching between one tab and another
+
+        // Search / Filter
+        void setFilter(QStringList);
+        void clearFilter();
+
+        void selectHome();
+        void selectDiary();
+        void selectAnalysis();
+        void selectTrain();
+        void selectInterval();
+
+        void setChartMenu();
+        void setSubChartMenu();
+        void setChartMenu(QMenu *);
+        void addChart(QAction*);
+
+        void showOptions();
+
+        void toggleSidebar();
+        void showSidebar(bool want);
+        void showToolbar(bool want);
+        void showTabbar(bool want);
+        void resetWindowLayout();
+        void toggleStyle();
+        void setToolButtons(); // set toolbar buttons to match tabview
+        void setStyleFromSegment(int); // special case for linux/win qtsegmentcontrol toggline
+        void toggleLowbar();
+        void showLowbar(bool want);
+
+        // Analysis View
+        void showTools();
+        void showRhoEstimator();
+
+        // Training View
+        void addDevice();
+        void downloadErgDB();
+        void manageLibrary();
+        void showWorkoutWizard();
+        void importWorkout();
+
+        // Diary View
+        void refreshCalendar();
+#ifdef GC_HAVE_ICAL
+        void uploadCalendar(); // upload ride to calendar
+#endif
+
+        // Measures View
+        void downloadMeasures();
+
+        // Activity Collection
+        void addIntervals(); // pass thru to tab
+        bool saveRideSingleDialog(Context *, RideItem *);
+        void saveSilent(Context *, RideItem *);
         void downloadRide();
         void manualRide();
-        void exportPWX();
-        void exportCSV();
-        void exportGC();
-#ifdef GC_HAVE_KML
-        void exportKML();
-#endif
-        void manualProcess(QString);
-        void importFile();
-        void findBestIntervals();
-        void addIntervalForPowerPeaksForSecs(RideFile *ride, int windowSizeSecs, QString name);
-        void findPowerPeaks();
-        void splitRide();
-        void deleteRide();
-        void tabChanged(int index);
-        void aboutDialog();
-        void notesChanged();
-        void saveRide();                        // save current ride menu item
-        void revertRide();
-        bool saveRideExitDialog();              // save dirty rides on exit dialog
-        void saveNotes();
-        void showOptions();
-        void showTools();
-	void importRideToDB();
-        void scanForMissing();
-	void saveAndOpenNotes();
-	void dateChanged(const QDate &);
-        void showTreeContextMenuPopup(const QPoint &);
-        void showContextMenuPopup(const QPoint &);
-        void deleteInterval();
-        void renameInterval();
-        void zoomInterval();
-        void frontInterval();
-        void backInterval();
-        void intervalEdited(QTreeWidgetItem *, int);
-#ifdef GC_HAVE_LIBOAUTH
+        void exportRide();
+        void exportBatch();
+        void generateHeatMap();
+        void exportMetrics();
+#ifdef GC_HAVE_KQOAUTH
         void tweetRide();
 #endif
+        void share();
+        void manualProcess(QString);
+#ifdef GC_HAVE_SOAP
+        void uploadTP();
+        void downloadTP();
+#endif
+        void importFile();
+        void splitRide();
+        void mergeRide();
+        void deleteRide();
+        void saveRide();                        // save current ride menu item
+        void revertRide();
+        bool saveRideExitDialog(Context *);              // save dirty rides on exit dialog
 
-    protected: 
+        // autoload rides from athlete specific directory (preferences)
+        void ridesAutoImport();
 
-        static QString notesFileName(QString rideFileName);
+        // save and restore state to context
+        void saveGCState(Context *);
+        void restoreGCState(Context *);
+
+        void configChanged(qint32);
 
     private:
-	bool parseRideFileName(const QString &name, QString *notesFileName, QDateTime *dt);
 
-        struct TabInfo {
-            QWidget *contents;
-            QString name;
-            QAction *action;
-            TabInfo(QWidget *contents, QString name) :
-                contents(contents), name(name), action(NULL) {}
-        };
-        QList<TabInfo> tabs;
+        GcScopeBar *scopebar;
+        Tab *currentTab;
+        QList<Tab*> tabList;
 
-	boost::shared_ptr<QSettings> settings;
-        IntervalItem *activeInterval; // currently active for context menu popup
-        RideItem *activeRide; // currently active for context menu popup
+#ifndef Q_OS_MAC
+        QTFullScreen *fullScreen;
+#endif
 
-        ViewSelection *viewSelection;
-        QStackedWidget *views;
+        SearchFilterBox *searchBox;
 
-        // Analysis
-        RideCalendar *calendar;
-        QSplitter *splitter;
-        QTreeWidget *treeWidget;
-        QSplitter *intervalsplitter;
-        QTreeWidget *intervalWidget;
-        QTabWidget *tabWidget;
-        RideSummaryWindow *rideSummaryWindow;
-        AllPlotWindow *allPlotWindow;
-        HistogramWindow *histogramWindow;
-        WeeklySummaryWindow *weeklySummaryWindow;
-        MetricAggregator *metricDB;
-        LTMWindow *ltmWindow;
-        CriticalPowerWindow *criticalPowerWindow;
-        ModelWindow *modelWindow;
-        AerolabWindow *aerolabWindow;
-        GoogleMapControl *googleMap;
-        RideEditor *rideEdit;
-        QTreeWidgetItem *allRides;
-        QTreeWidgetItem *allIntervals;
-        QSplitter *leftLayout;
-        RideMetadata *_rideMetadata;
-        QSplitter *summarySplitter;
+#ifdef Q_OS_MAC
+        // Mac Native Support
+        QtMacButton *import, *compose, *sidebar, *lowbar;
+        QtMacSegmentedButton *actbuttons, *styleSelector;
+        QToolBar *head;
+#else
+        // Not on Mac so use other types
+        QPushButton *import, *compose, *sidebar, *lowbar;
+        QtSegmentControl *actbuttons, *styleSelector;
+        GcToolBar *head;
 
-        // Train
-        TrainWindow   *trainWindow;
+        // the icons
+        QIcon importIcon, composeIcon, intervalIcon, splitIcon,
+              deleteIcon, sidebarIcon, lowbarIcon, tabbedIcon, tiledIcon;
+#endif
+        // tab bar (that supports swtitching on drag and drop)
+        DragBar *tabbar;
+        QStackedWidget *tabStack;
 
-        QwtPlotCurve *weeklyBSCurve;
-        QwtPlotCurve *weeklyRICurve;
-	PerformanceManagerWindow *performanceManagerWindow;
+        // window and tab menu
+        QMenu *openWindowMenu, *openTabMenu;
+        QSignalMapper *windowMapper, *tabMapper;
 
+        // chart menus
+        QMenu *chartMenu;
+        QMenu *subChartMenu;
 
-        // pedal force/pedal velocity scatter plot widgets
-        PfPvWindow  *pfPvWindow;
+        // Toolbar state checkables in View menu / context
+        QAction *styleAction;
+        QAction *showhideSidebar;
+        QAction *showhideLowbar;
+        QAction *showhideToolbar;
+        QAction *showhideTabbar;
 
-        QTextEdit *rideNotes;
-        QString currentNotesFile;
-        bool currentNotesChanged;
+        QAction *tweetAction;
+        QAction *shareAction;
 
-	RideItem *ride;  // the currently selected ride
+        // Miscellany
+        QSignalMapper *toolMapper;
 
-	bool useMetricUnits;  // whether metric units are used (or imperial)
-
-    QuarqdClient *client;
-
-    QSignalMapper *toolMapper;
+#if (defined Q_OS_MAC) && (QT_VERSION >= 0x50201)
+        QWidget *blackline;
+#endif
 };
 
 #endif // _GC_MainWindow_h
-

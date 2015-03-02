@@ -15,12 +15,12 @@
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+#include "GoldenCheetah.h"
 
 #include "RealtimeController.h"
 #include "Computrainer.h"
 
 // Abstract base class for Realtime device controllers
-
 
 #ifndef _GC_ComputrainerController_h
 #define _GC_ComputrainerController_h 1
@@ -29,7 +29,7 @@ class ComputrainerController : public RealtimeController
 {
 
 public:
-    ComputrainerController (RealtimeWindow *, DeviceConfiguration *);
+    ComputrainerController (TrainSidebar *, DeviceConfiguration *);
 
     Computrainer *myComputrainer;               // the device itself
 
@@ -37,7 +37,7 @@ public:
     int restart();                              // restart after paused
     int pause();                                // pauses data collection, inbound telemetry is discarded
     int stop();                                 // stops data collection thread
-    bool discover(DeviceConfiguration *);              // tell if a device is present at port passed
+    bool discover(QString);                     // tell if a device is present at port passed
 
 
     // telemetry push pull

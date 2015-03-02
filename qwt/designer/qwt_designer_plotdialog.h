@@ -10,29 +10,21 @@
 #ifndef QWT_DESIGNER_PLOTDIALOG_H
 #define QWT_DESIGNER_PLOTDIALOG_H
 
-#include <qglobal.h>
-
-#if QT_VERSION < 0x040000
-#ifdef __GNUC__
-#error This code is Qt4 only
-#endif
-#endif
-
 #include <QDialog>
 
 namespace QwtDesignerPlugin
 {
 
-class PlotDialog: public QDialog 
-{
-    Q_OBJECT
+    class PlotDialog: public QDialog
+    {
+        Q_OBJECT
 
-public:
-    PlotDialog(const QString &properties, QWidget *parent = NULL);
+    public:
+        PlotDialog( const QString &properties, QWidget *parent = NULL );
 
-signals:
-    void edited(const QString&);
-};
+    Q_SIGNALS:
+        void edited( const QString& );
+    };
 
 }
 

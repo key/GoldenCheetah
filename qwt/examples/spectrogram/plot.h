@@ -6,12 +6,16 @@ class Plot: public QwtPlot
     Q_OBJECT
 
 public:
-    Plot(QWidget * = NULL);
+    Plot( QWidget * = NULL );
 
-public slots:
-    void showContour(bool on);
-    void showSpectrogram(bool on);
+public Q_SLOTS:
+    void showContour( bool on );
+    void showSpectrogram( bool on );
+    void setAlpha( int );
+
+#ifndef QT_NO_PRINTER
     void printPlot();
+#endif
 
 private:
     QwtPlotSpectrogram *d_spectrogram;

@@ -15,13 +15,19 @@
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
+#include "GoldenCheetah.h"
 
 #include <QDateTime>
 #include <QtGui>
+#include <QDialog>
+#include <QLineEdit>
+#include <QLabel>
 
 class ToolsDialog : public QDialog
 {
         Q_OBJECT
+        G_OBJECT
+
 
     public:
         ToolsDialog(QWidget *parent = 0);
@@ -30,6 +36,7 @@ class ToolsDialog : public QDialog
         QPushButton *btnCalculate;
         QPushButton *btnOK;
         QLineEdit *txtCP;
+        QLineEdit *txtWP;
         QDoubleSpinBox *shortMinsSpinBox;
         QDoubleSpinBox *shortSecsSpinBox;
         QDoubleSpinBox *shortWattsSpinBox;

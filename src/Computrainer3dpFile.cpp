@@ -32,11 +32,10 @@
 #include <QVector>
 
 #include <algorithm>            // for std::sort
-#include <assert.h>
-#include <boost/cstdint.hpp>    // for int8_t, int16_t, etc.
+#include <stdint.h>    // for int8_t, int16_t, etc.
 #include <iostream>
 
-#include "math.h"
+#include "cmath"
 #include "Units.h"
 
 
@@ -48,7 +47,8 @@ static int Computrainer3dpFileReaderRegistered =
                                                ());
 
 RideFile *Computrainer3dpFileReader::openRideFile(QFile & file,
-                                                  QStringList & errors)
+                                                  QStringList & errors,
+                                                  QList<RideFile*>*)
     const
 {
     // open up the .3dp file, prepare a little-endian-ordered
@@ -76,7 +76,7 @@ RideFile *Computrainer3dpFileReader::openRideFile(QFile & file,
     // the next 4 bytes are the ASCII characters 'perf'
     char perfStr[5];
     is.readRawData(perfStr, 4);
-    perfStr[4] = NULL;
+    perfStr[4] = '\0';
     if(strcmp(perfStr,"perf"))
     {
         errors << "File is encrypted.";
@@ -237,7 +237,14 @@ RideFile *Computrainer3dpFileReader::openRideFile(QFile & file,
           // special case first data point
           rideFile->appendPoint((double) ms/1000, (double) cad,
                                 (double) hr, km, speed, 0.0, watts,
-                                altitude, 0, 0, 0.0, 0);
+                                altitude, 0, 0, 0.0, 0.0, RideFile::NoTemp, 0.0,
+                                0.0, 0.0, 0.0, 0.0, // pedal torque eff / pedal smoothness
+                                0.0, 0.0, // pedal platform offset
+                                0.0, 0.0, 0.0, 0.0, //pedal power phase
+                                0.0, 0.0, 0.0, 0.0, //pedal peak power phase
+                                0.0, 0.0, //  smO2 / thb
+                                0.0, 0.0, 0.0, // running dynamics
+                                0);
         }
         // while loop since an interval in the .3dp file might
         // span more than one CT_EMIT_MS interval
@@ -286,6 +293,15 @@ RideFile *Computrainer3dpFileReader::openRideFile(QFile & file,
                                 0, // lon
                                 0, // lat
                                 0.0, // headwind
+                                0.0, // slope
+                                RideFile::NoTemp, // temp
+                                0.0,
+                                0.0, 0.0, 0.0, 0.0, // pedal torque effectiveness / pedal smoothness
+                                0.0, 0.0, // pedal platform offset
+                                0.0, 0.0, 0.0, 0.0, //pedal power phase
+                                0.0, 0.0, 0.0, 0.0, //pedal peak power phase
+                                0.0, 0.0, // smO2 / tHb
+                                0.0, 0.0, 0.0, // running dynamics
                                 0);
 
           // reset averaging sums
@@ -329,7 +345,8 @@ RideFile *Computrainer3dpFileReader::openRideFile(QFile & file,
     rideFile->setRecIntSecs(((double) CT_EMIT_MS) / 1000.0);
 
     // tell GC what kind of device a computrainer is
-    rideFile->setDeviceType("Computrainer 3DP");
+    rideFile->setDeviceType("Computrainer");
+    rideFile->setFileFormat("Computrainer 3DP (3dp)");
 
     // all done!  close up.
     file.close();

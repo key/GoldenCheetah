@@ -17,14 +17,14 @@
  */
 
 #include "RideMetric.h"
-#include <QObject>
-
-#define tr(s) QObject::tr(s)
+#include <QApplication>
+#include "RideItem.h"
 
 // This metric computes aerobic decoupling percentage as described
 // by Joe Friel:
 //
-//   http://www.trainingbible.com/pdf/AeT_Training.pdf
+//   http://www.trainingbible.com/bkp-all/pdf/AeT_Training.pdf
+//   http://home.trainingpeaks.com/blog/article/aerobic-endurance-and-decoupling
 //
 // Aerobic decoupling is a measure of how much heart rate rises or
 // how much power falls off during the course of a long ride.  Joe suggests
@@ -39,6 +39,7 @@
 // in heart rate to power ratio as described by Friel.
 
 class AerobicDecoupling : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(AerobicDecoupling)
 
     double percent;
 
@@ -47,14 +48,19 @@ class AerobicDecoupling : public RideMetric {
     AerobicDecoupling() : percent(0.0)
     {
         setSymbol("aerobic_decoupling");
+        setInternalName("Aerobic Decoupling");
+    }
+    void initialize() {
         setName(tr("Aerobic Decoupling"));
         setType(RideMetric::Average);
         setMetricUnits(tr("%"));
         setImperialUnits(tr("%"));
-        setPrecision(2);
+        setPrecision(1);
     }
-    void compute(const RideFile *ride, const Zones *, int, const HrZones *, int,
-                 const QHash<QString,RideMetric*> &) {
+    void compute(const RideFile *ride, const Zones *, int,
+                 const HrZones *, int,
+                 const QHash<QString,RideMetric*> &,
+                 const Context *) {
         double firstHalfPower = 0.0, secondHalfPower = 0.0;
         double firstHalfHR = 0.0, secondHalfHR = 0.0;
         int halfway = ride->dataPoints().size() / 2;
@@ -83,12 +89,20 @@ class AerobicDecoupling : public RideMetric {
             secondHalfPower /= secondHalfCount;
             firstHalfHR /= firstHalfCount;
             secondHalfHR /= secondHalfCount;
-            double firstHalfRatio = firstHalfHR / firstHalfPower;
-            double secondHalfRatio = secondHalfHR / secondHalfPower;
-            percent = 100.0 * (secondHalfRatio - firstHalfRatio) / firstHalfRatio;
+
+            // was wrong (Christoph Ernst raise an issue)
+            //     double firstHalfRatio = firstHalfHR / firstHalfPower;
+            //     double secondHalfRatio = secondHalfHR / secondHalfPower;
+            //     percent = 100.0 * (secondHalfRatio - firstHalfRatio) / firstHalfRatio;
+            // should be :
+            double firstHalfRatio = firstHalfPower / firstHalfHR;
+            double secondHalfRatio = secondHalfPower / secondHalfHR;
+            percent = 100.0 * (firstHalfRatio - secondHalfRatio) / firstHalfRatio;
         }
         setValue(percent);
     }
+
+    bool isRelevantForRide(const RideItem *ride) const { return ride->present.contains("H") && ride->present.contains("P"); }
 
     RideMetric *clone() const { return new AerobicDecoupling(*this); }
 };

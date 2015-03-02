@@ -16,41 +16,48 @@
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#include <math.h>
+#include <cmath>
 #include <float.h>
 #include "LTMTrend.h"
 
 #include <QDebug>
 
 LTMTrend::LTMTrend(double *xdata, double *ydata, int count) :
+          minX(0.0), maxX(0.0), minY(0.0), maxY(0.0),
           points(0.0), sumX(0.0), sumY(0.0), sumXsquared(0.0),
           sumYsquared(0.0), sumXY(0.0), a(0.0), b(0.0)
 {
-    if (count == 0) return;
+    if (count <= 2) return;
 
-    for (int i = 0; i < count; i++) addXY(xdata[i], ydata[i]);
-}
+    for (int i = 0; i < count; i++) {
 
-void
-LTMTrend::addXY(double& x, double& y)
-{
-    points++;
-    sumX += x;
-    sumY += y;
-    sumXsquared += x * x;
-    sumYsquared += y * y;
-    sumXY += x * y;
-    calc();
-}
+        // ignore zero points
+        if (ydata[i] == 0.00) continue;
 
-void
-LTMTrend::calc()
-{
-    if (points > 2) {
-        if (fabs( double(points) * sumXsquared - sumX * sumX) > DBL_EPSILON) {
-            b = ( double(points) * sumXY - sumY * sumX) /
-                ( double(points) * sumXsquared - sumX * sumX);
-            a = (sumY - b * sumX) / double(points);
-        }
+        points++;
+        sumX += xdata[i];
+        sumY += ydata[i];
+        sumXsquared += xdata[i] * xdata[i];
+        sumYsquared += ydata[i] * ydata[i];
+        sumXY += xdata[i] * ydata[i];
+    }
+
+    if (fabs( double(points) * sumXsquared - sumX * sumX) > DBL_EPSILON) {
+        b = ( double(points) * sumXY - sumY * sumX) /
+            ( double(points) * sumXsquared - sumX * sumX);
+        a = (sumY - b * sumX) / double(points);
+        double r = ( double(points) * sumXY - sumY * sumX) /
+            sqrt(( double(points) * sumXsquared - sumX * sumX) * ( double(points) * sumYsquared - sumY * sumY));
+
+        double sx = b * ( sumXY - sumX * sumY / double(points) );
+        double sy2 = sumYsquared - sumY * sumY / double(points);
+        double sy = sy2 - sx;
+
+        double coefD = sx / sy2;
+        double coefC = sqrt(coefD);
+        double stdError = sqrt(sy / double(points - 2));
+
+        //qDebug() << coefD << coefC << stdError << r;
     }
 }
+

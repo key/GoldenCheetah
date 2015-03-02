@@ -17,21 +17,21 @@
  */
 
 #include "PwxRideFile.h"
+#include "Athlete.h"
 #include "Settings.h"
 #include <QDomDocument>
 #include <QVector>
-#include <assert.h>
 
 #include <QDebug>
 
 static int pwxFileReaderRegistered =
     RideFileFactory::instance().registerReader(
-        "pwx", "Training Peaks PWX", new PwxFileReader());
+        "pwx", "TrainingPeaks PWX", new PwxFileReader());
 
 RideFile *
-PwxFileReader::openRideFile(QFile &file, QStringList &errors) const
+PwxFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const
 {
-    QDomDocument doc("Training Peaks PWX");
+    QDomDocument doc("TrainingPeaks PWX");
     if (!file.open(QIODevice::ReadOnly)) {
         errors << "Could not open file.";
         return NULL;
@@ -48,17 +48,33 @@ PwxFileReader::openRideFile(QFile &file, QStringList &errors) const
 }
 
 RideFile *
-PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
+PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList&) const
 {
     RideFile *rideFile = new RideFile();
     QDomElement root = doc.documentElement();
     QDomNode workout = root.firstChildElement("workout");
     QDomNode node = workout.firstChild();
 
+    // get the Smart Recording paramaters
+    QVariant isGarminSmartRecording = appsettings->value(NULL, GC_GARMIN_SMARTRECORD,Qt::Checked);
+    QVariant GarminHWM = appsettings->value(NULL, GC_GARMIN_HWMARK);
+    if (GarminHWM.isNull() || GarminHWM.toInt() == 0) GarminHWM.setValue(25); // default to 25 seconds.
+
     // can arrive at any time, so lets cache them
     // and sort out at the end
     QDateTime rideDate;
-    QString rideNotes;
+
+    // we collect summary data but discard it for all
+    // bar manual ride files where this is all we are 
+    // gonna get !
+    double manualDuration = 0.00f;
+    double manualWork = 0.00f;
+    double manualTSS = 0.00f;
+    double manualHR = 0.00f;
+    double manualSpeed = 0.00f;
+    double manualPower = 0.00f;
+    double manualKM = 0.00f;
+    double manualElevation = 0.00f;
 
     int intervals = 0;
     int samples = 0;
@@ -88,6 +104,12 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
             QDomElement code = node.toElement();
             rideFile->setTag("Workout Code", code.text());
 
+        // workout title
+        } else if (node.nodeName() == "title") {
+
+            QDomElement title = node.toElement();
+            rideFile->setTag("Workout Title", title.text());
+
         // goal / objective
         } else if (node.nodeName() == "goal") {
 
@@ -103,8 +125,9 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
         // notes
         } else if (node.nodeName() == "cmt") {
 
+            // Add the PWX cmt tag as notes
             QDomElement notes = node.toElement();
-            rideNotes = notes.text();
+            rideFile->setTag("Notes", notes.text());
 
         // device type and info
         } else if (node.nodeName() == "device") {
@@ -119,6 +142,7 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
                 devicetype += model.text();
             }
             rideFile->setDeviceType(devicetype);
+            rideFile->setFileFormat("Peaksware Data File (pwx)");
 
             // device settings data
             QString deviceinfo;
@@ -161,23 +185,23 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
                 // duration - convert to end
                 QDomElement duration = summary.firstChildElement("duration");
                 if (!duration.isNull() && add.start != -1)
-                    add.stop = beginning.text().toDouble() + add.start;
+                    add.stop = duration.text().toDouble() + add.start;
                 else
                     add.stop = -1;
 
                 // add interval
                 if (add.start != -1 && add.stop != -1) {
-                    rideFile->addInterval(add.start, add.stop, add.name);
+                    rideFile->addInterval(round(add.start+1), round(add.stop), add.name);
                 }
             }
 
-        // data points: offset, hr, spd, pwr, torq, cad, dist, lat, lon, alt (ignored: temp, time)
+        // data points: offset, hr, spd, pwr, torq, cad, dist, lat, lon, alt, temp
         } else if (node.nodeName() == "sample") {
             RideFilePoint add;
 
             // offset (secs)
             QDomElement off = node.firstChildElement("timeoffset");
-            if (!off.isNull()) add.secs = off.text().toDouble();
+            if (!off.isNull()) add.secs = round(off.text().toDouble());
             else add.secs = 0.0;
             // hr
             QDomElement hr = node.firstChildElement("hr");
@@ -191,9 +215,9 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
             QDomElement pwr = node.firstChildElement("pwr");
             if (!pwr.isNull()) {
                 add.watts = pwr.text().toDouble();
-                // XXX undo the fudge to set zero values to
-                //     1 in the writer (below). This is to keep
-                //     the TP upload web-service happy
+                // NOTE! undo the fudge to set zero values to
+                //       1 in the writer (below). This is to keep
+                //       the TP upload web-service happy with zero values
                 if (add.watts == 1) add.watts = 0.0;
             } else add.watts = 0.0;
             // torq
@@ -221,25 +245,187 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
             QDomElement alt = node.firstChildElement("alt");
             if (!alt.isNull()) add.alt = alt.text().toDouble();
             else add.alt = 0.0;
+            // temp
+            QDomElement temp = node.firstChildElement("temp");
+            if (!temp.isNull()) add.temp = temp.text().toDouble();
+            else add.temp = RideFile::NoTemp;
 
-            // do we need to calculate distance?
-            if (add.km == 0.0 && samples) {
+            // if there are data points && a time difference > 1sec && smartRecording processing is requested at all
+            if ((!rideFile->dataPoints().empty()) && (add.secs > rtime + 1) && (isGarminSmartRecording.toInt() != 0)) {
+                bool badgps = false;
+                bool lapSwim = false;
+                // Handle smart recording if configured in preferences.  Linearly interpolate missing points.
+                RideFilePoint *prevPoint = rideFile->dataPoints().back();
+                double deltaSecs = add.secs - prevPoint->secs;
+
+                // If the last lat/lng was missing (0/0) then all points up to lat/lng are marked as 0/0.
+                if (prevPoint->lat == 0 && prevPoint->lon == 0 ) badgps = true;
+
+                double deltaCad = add.cad - prevPoint->cad;
+                double deltaHr = add.hr - prevPoint->hr;
+                double deltaDist = add.km - prevPoint->km;
+                if (add.km < 0.00001) deltaDist = 0.000f; // effectively zero distance
+                double deltaSpeed = add.kph - prevPoint->kph;
+                double deltaTorque = add.nm - prevPoint->nm;
+                double deltaPower = add.watts - prevPoint->watts;
+                double deltaAlt = add.alt - prevPoint->alt;
+                double deltaLon = add.lon - prevPoint->lon;
+                double deltaLat = add.lat - prevPoint->lat;
+                double deltaHeadwind = add.headwind - prevPoint->headwind;
+                double deltaSlope = add.slope - prevPoint->slope;
+                double deltaLeftRightBalance = add.lrbalance - prevPoint->lrbalance;
+                double deltaLeftTE = add.lte - prevPoint->lte;
+                double deltaRightTE = add.rte - prevPoint->rte;
+                double deltaLeftPS = add.lps - prevPoint->lps;
+                double deltaRightPS = add.rps - prevPoint->rps;
+                double deltaLeftPedalCenterOffset = add.lpco - prevPoint->lpco;
+                double deltaRightPedalCenterOffset = add.rpco - prevPoint->rpco;
+                double deltaLeftTopDeathCenter = add.lppb - prevPoint->lppb;
+                double deltaRightTopDeathCenter = add.rppb - prevPoint->rppb;
+                double deltaLeftBottomDeathCenter = add.lppe - prevPoint->lppe;
+                double deltaRightBottomDeathCenter = add.rppe - prevPoint->rppe;
+                double deltaLeftTopPeakPowerPhase = add.lpppb - prevPoint->lpppb;
+                double deltaRightTopPeakPowerPhase = add.rpppb - prevPoint->rpppb;
+                double deltaLeftBottomPeakPowerPhase = add.lpppe - prevPoint->lpppe;
+                double deltaRightBottomPeakPowerPhase = add.rpppe - prevPoint->rpppe;
+                double deltaSmO2 = add.smo2 - prevPoint->smo2;
+                double deltaTHb = add.thb - prevPoint->thb;
+                double deltarvert = add.rvert - prevPoint->rvert;
+                double deltarcad = add.rcad - prevPoint->rcad;
+                double deltarcontact = add.rcontact - prevPoint->rcontact;
+
+                // Swim with distance and no GPS => pool swim
+                // limited to account for weird intervals or pauses
+                if (rideFile->isSwim() && badgps && (add.km > 0 || rdist > 0)) {    lapSwim = true;
+                    add.kph = add.km > rdist ? (add.km - rdist)*3600/deltaSecs : 0.0;
+                    if (add.kph == 0.0) add.cad = 0; // rest => no stroke rate
+                }
+
+                // only smooth the maximal smart recording gap defined in
+                // preferences - we don't want to crash / stall on bad
+                // or corrupt files, lap swimming lenghts/pauses limited
+                // to 10x HWM for the same reason.
+                if (deltaSecs > 0 && (deltaSecs < GarminHWM.toInt() || (lapSwim && deltaSecs < 10*GarminHWM.toInt()))) {
+
+                    for (int i = 1; i < deltaSecs; i++) {
+                        double weight = i /deltaSecs;
+                        // running totals
+                        samples++;
+                        rtime++;
+                        rdist = prevPoint->km + (deltaDist * weight);
+                        // add the data point
+                        rideFile->appendPoint(
+                            rtime,
+                            lapSwim ? add.cad : prevPoint->cad + (deltaCad * weight),
+                            prevPoint->hr + (deltaHr * weight),
+                            rdist,
+                            lapSwim ? add.kph : prevPoint->kph + (deltaSpeed * weight),
+                            prevPoint->nm + (deltaTorque * weight),
+                            prevPoint->watts + (deltaPower * weight),
+                            prevPoint->alt + (deltaAlt * weight),
+                            (badgps == 1) ? 0 : prevPoint->lon + (deltaLon * weight),
+                            (badgps == 1) ? 0 : prevPoint->lat + (deltaLat * weight),
+                            prevPoint->headwind + (deltaHeadwind * weight),
+                            prevPoint->slope + (deltaSlope * weight),
+                            add.temp,
+                            prevPoint->lrbalance + (deltaLeftRightBalance * weight),
+                            prevPoint->lte + (deltaLeftTE * weight),
+                            prevPoint->rte + (deltaRightTE * weight),
+                            prevPoint->lps + (deltaLeftPS * weight),
+                            prevPoint->rps + (deltaRightPS * weight),
+                            prevPoint->lpco + (deltaLeftPedalCenterOffset * weight),
+                            prevPoint->rpco + (deltaRightPedalCenterOffset * weight),
+                            prevPoint->lppb + (deltaLeftTopDeathCenter * weight),
+                            prevPoint->rppb + (deltaRightTopDeathCenter * weight),
+                            prevPoint->lppe + (deltaLeftBottomDeathCenter * weight),
+                            prevPoint->rppe + (deltaRightBottomDeathCenter * weight),
+                            prevPoint->lpppb + (deltaLeftTopPeakPowerPhase * weight),
+                            prevPoint->rpppb + (deltaRightTopPeakPowerPhase * weight),
+                            prevPoint->lpppe + (deltaLeftBottomPeakPowerPhase * weight),
+                            prevPoint->rpppe + (deltaRightBottomPeakPowerPhase * weight),
+                            prevPoint->smo2 + (deltaSmO2 * weight),
+                            prevPoint->thb + (deltaTHb * weight),
+                            prevPoint->rvert + (deltarvert * weight),
+                            prevPoint->rcad + (deltarcad * weight),
+                            prevPoint->rcontact + (deltarcontact * weight),
+                            add.interval);
+                    }
+                }
+            } else if (add.km == 0.0 && samples) {
+                // do we need to calculate distance?
                 // delta secs * kph/3600
                 add.km = rdist + ((add.secs - rtime) * (add.kph/3600));
             }
 
-            // running totals
-            samples++;
-            rtime = add.secs;
-            rdist = add.km;
-
-            // add the data point
-            rideFile->appendPoint(add.secs, add.cad, add.hr, add.km, add.kph,
-                    add.nm, add.watts, add.alt, add.lon, add.lat, add.headwind, add.interval);
-
-
-        // ignored for now
+            // add the data point avoiding duplicates
+            if (add.secs > rtime || rideFile->dataPoints().empty()) {
+                if (add.secs == 0.0) add.kph = 0.0; // avoids a glitch in km
+                // running totals
+                samples++;
+                rtime = add.secs;
+                rdist = add.km;
+                rideFile->appendPoint(add.secs, add.cad, add.hr, add.km, add.kph,
+                    add.nm, add.watts, add.alt, add.lon, add.lat, add.headwind,
+                    add.slope, add.temp, add.lrbalance,
+                    add.lte, add.rte, add.lps, add.rps,
+                    add.lpco, add.rpco,
+                    add.lppb, add.rppb, add.lppe, add.rppe,
+                    add.lpppb, add.rpppb, add.lpppe, add.rpppe,
+                    add.smo2, add.thb,
+                    add.rvert, add.rcad, add.rcontact,
+                    add.interval);
+            }
+        
         } else if (node.nodeName() == "summarydata") {
+
+            // get the summary data in case there are no samples
+            // this is when there is a manual entry, so we can
+            // set the overrides from this
+
+            //<summarydata xmlns="http://www.peaksware.com/PWX/1/0">
+            //<duration>600</duration>
+            //<work>514.632000296428</work>
+            //<tss>100</tss>
+            //<hr></hr>
+            //<spd></spd>
+            //<pwr></pwr>
+            //<dist>23000</dist>
+            //<climbingelevation>14</climbingelevation>
+            //</summarydata>
+
+            // duration
+            QDomElement off = node.firstChildElement("duration");
+            if (!off.isNull()) manualDuration = off.text().toDouble();
+
+            // work
+            off = node.firstChildElement("work");
+            if (!off.isNull()) manualWork = off.text().toDouble();
+
+            // tss
+            off = node.firstChildElement("tss");
+            if (!off.isNull()) manualTSS = off.text().toDouble();
+
+            // hr
+            off = node.firstChildElement("hr");
+            if (!off.isNull()) manualHR = off.text().toDouble();
+
+            // speed
+            off = node.firstChildElement("spd");
+            if (!off.isNull()) manualSpeed = off.text().toDouble();
+
+            // power
+            off = node.firstChildElement("pwr");
+            if (!off.isNull()) manualPower = off.text().toDouble();
+
+            // distance
+            off = node.firstChildElement("dist");
+            if (!off.isNull()) manualKM = off.text().toDouble();
+
+            // Elevation
+            off = node.firstChildElement("climbingelevation");
+            if (!off.isNull()) manualElevation = off.text().toDouble();
+
+
         } else if (node.nodeName() == "extension") {
         }
 
@@ -248,19 +434,115 @@ PwxFileReader::PwxFromDomDoc(QDomDocument doc, QStringList &errors) const
 
     // post-process and check
     if (samples < 2) {
-        errors << "Not enough samples present";
-        delete rideFile;
-        return NULL;
+
+        // set to 1s, it really doesn't matter!
+        rideFile->setRecIntSecs(1.0f);
+
+        // we're creating a manual ride file so
+        // set the overrides from the supplied summarydata
+
+        // distance
+        if (manualKM) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualKM / 1000)); // its in meters
+            rideFile->metricOverrides.insert("total_distance", override);
+        }
+
+        // duration
+        if (manualDuration) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualDuration));
+            rideFile->metricOverrides.insert("workout_time", override);
+            rideFile->metricOverrides.insert("time_riding", override);
+        }
+
+        // work
+        if (manualWork) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualWork));
+            rideFile->metricOverrides.insert("total_work", override);
+        }
+
+        // TSS
+        if (manualTSS) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualTSS));
+            rideFile->metricOverrides.insert("coggan_tss", override);
+        }
+
+        // HR
+        if (manualHR) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualHR));
+            rideFile->metricOverrides.insert("average_hr", override);
+        }
+
+        // Speed
+        if (manualSpeed) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualSpeed));
+            rideFile->metricOverrides.insert("average_speed", override);
+        }
+
+        // Power
+        if (manualPower) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualPower));
+            rideFile->metricOverrides.insert("average_power", override);
+        }
+
+        // Elevation Gain
+        if (manualElevation) {
+            QMap<QString,QString> override;
+            override.insert("value", QString("%1").arg(manualElevation));
+            rideFile->metricOverrides.insert("elevation_gain", override);
+        }
+
     } else {
+
         // need to determine the recIntSecs - first - second sample?
-        rideFile->setRecIntSecs(rideFile->dataPoints()[1]->secs -
-                                rideFile->dataPoints()[0]->secs);
+        // To estimate the recording interval, take the median of the
+        // first 1000 samples and round to nearest millisecond.
+        int n = rideFile->dataPoints().size();
+        n = qMin(n, 1000);
+        if (n >= 2) {
+            QVector<double> secs(n-1);
+            for (int i = 0; i < n-1; ++i) {
+                double now = rideFile->dataPoints()[i]->secs;
+                double then = rideFile->dataPoints()[i+1]->secs;
+                secs[i] = then - now;
+            }
+            std::sort(secs.begin(), secs.end());
+            int mid = n / 2 - 1;
+            double recint = round(secs[mid] * 1000.0) / 1000.0;
+            rideFile->setRecIntSecs(recint);
+        } else {
+            // zero or one sample just make it a second
+            rideFile->setRecIntSecs(1);
+        }
+
+
+        // if its a daft number then make it 1s -- there is probably
+        // a gap in recording in there.
+        switch ((int)rideFile->recIntSecs()) {
+            case 1 : // lots!
+            case 2 : // Timex
+            case 4 : // garmin smart recording
+            case 5 : // polar sometimes
+            case 10 : // polar and others
+            case 15 :
+                break;
+
+            default:
+                rideFile->setRecIntSecs(1);
+                break;
+        }
     }
     return rideFile;
 }
 
 bool
-PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile &file) const
+PwxFileReader::writeRideFile(Context *context, const RideFile *ride, QFile &file) const
 {
     QDomText text; // used all over
     QDomDocument doc;
@@ -269,6 +551,7 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
 
     // pwx
     QDomElement pwx = doc.createElementNS("http://www.peaksware.com/PWX/1/0", "pwx");
+    pwx.setAttribute("creator", "Golden Cheetah");
     pwx.setAttribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance");
     pwx.setAttribute("xmlns:xsd", "http://www.w3.org/2001/XMLSchema");
     pwx.setAttribute("xsi:schemaLocation", "http://www.peaksware.com/PWX/1/0 http://www.peaksware.com/PWX/1/0/pwx.xsd");
@@ -282,22 +565,79 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
     // athlete details
     QDomElement athlete = doc.createElement("athlete");
     QDomElement name = doc.createElement("name");
-    text = doc.createTextNode(cyclist); name.appendChild(text);
+    text = doc.createTextNode(context->athlete->cyclist); name.appendChild(text);
     athlete.appendChild(name);
+    double cyclistweight = ride->getTag("Weight", "0.0").toDouble();
+    if (cyclistweight) {
+        QDomElement weight = doc.createElement("weight");
+        text = doc.createTextNode(QString("%1").arg(cyclistweight));
+        weight.appendChild(text);
+        athlete.appendChild(weight);
+    }
     root.appendChild(athlete);
 
     // sport
     QString sport = ride->getTag("Sport", "Bike");
+    if (sport == QObject::tr("Biking") || sport == QObject::tr("Cycling") || sport == QObject::tr("Cycle") || sport == QObject::tr("Bike")) {
+        sport = "Bike";
+    }
     QDomElement sportType = doc.createElement("sportType");
-    text = doc.createTextNode(sport); sportType.appendChild(text);
+    text = doc.createTextNode(sport); 
+    sportType.appendChild(text);
     root.appendChild(sportType);
 
+    // notes
+    if (ride->getTag("Notes","") != "") {
+        QDomElement notes = doc.createElement("cmt");
+        text = doc.createTextNode(ride->getTag("Notes","")); notes.appendChild(text);
+        root.appendChild(notes);
+    }
+    
+    
     // workout code
     if (ride->getTag("Workout Code", "") != "") {
         QString wcode = ride->getTag("Workout Code", "");
         QDomElement code = doc.createElement("code");
         text = doc.createTextNode(wcode); code.appendChild(text);
         root.appendChild(code);
+    }
+
+    // workout title
+    QString wtitle;
+    if (ride->getTag("Workout Title", "") != "") {
+        wtitle = ride->getTag("Workout Title", "");
+    } else {
+
+        // We try metadata fields; Title, then Name then Route then Workout Code
+
+        // is "Title" set?
+        if (!ride->getTag("Title", "").isEmpty()) {
+            wtitle = ride->getTag("Title", "");
+        } else {
+
+            // is "Name" set?
+            if (!ride->getTag("Name", "").isEmpty()) {
+                wtitle = ride->getTag("Name", "");
+            } else {
+
+                // is "Route" set?
+                if (!ride->getTag("Route", "").isEmpty()) {
+                    wtitle = ride->getTag("Route", "");
+                } else {
+
+                    //  is Workout Code set?
+                    if (!ride->getTag("Workout Code", "").isEmpty()) {
+                        wtitle = ride->getTag("Workout Code", "");
+                    }
+                }
+            }
+        }
+    }
+    // did we set it to /anything/ ?
+    if (wtitle != "") {
+        QDomElement title = doc.createElement("title");
+        text = doc.createTextNode(wtitle); title.appendChild(text);
+        root.appendChild(title);
     }
 
     // goal
@@ -308,20 +648,25 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
         root.appendChild(goal);
     }
 
+    // device type 
+    if (ride->deviceType() != "") { 
 
-    // notes
-    // XXX todo
-    // device type
-    if (ride->deviceType() != "") {
-        QDomElement device = doc.createElement("device");
+        QDomElement device = doc.createElement("device"); 
         device.setAttribute("id", ride->deviceType());
-        QDomElement make = doc.createElement("make");
-        text = doc.createTextNode(ride->deviceType());
-        make.appendChild(text);
-        device.appendChild(make);
-        root.appendChild(device);
-    }
 
+        QDomElement make = doc.createElement("make"); 
+        text = doc.createTextNode("Golden Cheetah"); 
+        make.appendChild(text); 
+        device.appendChild(make);
+
+        QDomElement model = doc.createElement("model"); 
+        text = doc.createTextNode(ride->deviceType());
+        model.appendChild(text); 
+        device.appendChild(model);
+
+        root.appendChild(device); 
+    }
+    
     // time
     QDomElement time = doc.createElement("time");
     text = doc.createTextNode(ride->startTime().toString(Qt::ISODate));
@@ -332,12 +677,14 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
     QDomElement summarydata = doc.createElement("summarydata");
     root.appendChild(summarydata);
     QDomElement beginning = doc.createElement("beginning");
-    text = doc.createTextNode(QString("%1").arg(ride->dataPoints().first()->secs));
+    text = doc.createTextNode(QString("%1").arg(ride->dataPoints().empty()
+        ? 0 : ride->dataPoints().first()->secs));
     beginning.appendChild(text);
     summarydata.appendChild(beginning);
 
     QDomElement duration = doc.createElement("duration");
-    text = doc.createTextNode(QString("%1").arg(ride->dataPoints().last()->secs));
+    text = doc.createTextNode(QString("%1").arg(ride->dataPoints().empty()
+        ? 0 : ride->dataPoints().last()->secs));
     duration.appendChild(text);
     summarydata.appendChild(duration);
 
@@ -379,7 +726,9 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
         summarydata.appendChild(s);
     }
     QDomElement dist = doc.createElement("dist");
-    text = doc.createTextNode(QString("%1").arg((int)(ride->dataPoints().last()->km * 1000)));
+    text = doc.createTextNode(QString("%1")
+        .arg((int)(ride->dataPoints().empty() ? 0
+            : ride->dataPoints().last()->km * 1000)));
     dist.appendChild(text);
     summarydata.appendChild(dist);
 
@@ -391,45 +740,65 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
         summarydata.appendChild(s);
     }
 
+    if (ride->areDataPresent()->temp) {
+        QDomElement s = doc.createElement("temp");
+        s.setAttribute("max", "0");
+        s.setAttribute("min", "0");
+        s.setAttribute("avg", "0");
+        summarydata.appendChild(s);
+    }
+
     // interval "segments"
-    if (!ride->intervals().empty()) {
-        foreach (RideFileInterval i, ride->intervals()) {
-            QDomElement segment = doc.createElement("segment");
-            root.appendChild(segment);
+    foreach (RideFileInterval i, ride->intervals()) {
+        QDomElement segment = doc.createElement("segment");
+        root.appendChild(segment);
 
-            // name
-            QDomElement name = doc.createElement("name");
-            text = doc.createTextNode(i.name); name.appendChild(text);
-            segment.appendChild(name);
+        // name
+        QDomElement name = doc.createElement("name");
+        text = doc.createTextNode(i.name); name.appendChild(text);
+        segment.appendChild(name);
 
-            // summarydata
-            QDomElement summarydata = doc.createElement("summarydata");
-            segment.appendChild(summarydata);
+        // summarydata
+        QDomElement summarydata = doc.createElement("summarydata");
+        segment.appendChild(summarydata);
 
-            // beginning
-            QDomElement beginning = doc.createElement("beginning");
-            text = doc.createTextNode(QString("%1").arg(i.start));
-            beginning.appendChild(text);
-            summarydata.appendChild(beginning);
+        // beginning
+        QDomElement beginning = doc.createElement("beginning");
+        text = doc.createTextNode(QString("%1").arg(i.start));
+        beginning.appendChild(text);
+        summarydata.appendChild(beginning);
 
-            // duration
-            QDomElement duration = doc.createElement("duration");
-            text = doc.createTextNode(QString("%1").arg(i.stop - i.start));
-            duration.appendChild(text);
-            summarydata.appendChild(duration);
-        }
+        // duration
+        QDomElement duration = doc.createElement("duration");
+        text = doc.createTextNode(QString("%1").arg(i.stop - i.start));
+        duration.appendChild(text);
+        summarydata.appendChild(duration);
     }
 
     // samples
     // data points: timeoffset, dist, hr, spd, pwr, torq, cad, lat, lon, alt
     if (!ride->dataPoints().empty()) {
+        int secs = 0;
+
         foreach (const RideFilePoint *point, ride->dataPoints()) {
+            // if there was a gap, log time when this sample started:
+            if( secs + ride->recIntSecs() < point->secs ){
+                QDomElement sample = doc.createElement("sample");
+                root.appendChild(sample);
+
+                QDomElement timeoffset = doc.createElement("timeoffset");
+                text = doc.createTextNode(QString("%1")
+                    .arg(point->secs - ride->recIntSecs() ));
+                timeoffset.appendChild(text);
+                sample.appendChild(timeoffset);
+            }
+
             QDomElement sample = doc.createElement("sample");
             root.appendChild(sample);
 
             // time
             QDomElement timeoffset = doc.createElement("timeoffset");
-            text = doc.createTextNode(QString("%1").arg((int)point->secs));
+            text = doc.createTextNode(QString("%1").arg(point->secs));
             timeoffset.appendChild(text);
             sample.appendChild(timeoffset);
 
@@ -477,7 +846,7 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
 
             // distance - meters
             QDomElement dist = doc.createElement("dist");
-            text = doc.createTextNode(QString("%1").arg((int)(point->km*1000)));
+            text = doc.createTextNode(QString("%1").arg((point->km*1000)));
             dist.appendChild(text);
             sample.appendChild(dist);
 
@@ -485,14 +854,14 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
             // lat
             if (ride->areDataPresent()->lat && point->lat > -90.0 && point->lat < 90.0) {
                 QDomElement lat = doc.createElement("lat");
-                text = doc.createTextNode(QString("%1").arg(point->lat));
+                text = doc.createTextNode(QString("%1").arg(point->lat, 0, 'g', 11));
                 lat.appendChild(text);
                 sample.appendChild(lat);
             }
             // lon
             if (ride->areDataPresent()->lon && point->lon > -180.00 && point->lon < 180.00) {
                 QDomElement lon = doc.createElement("lon");
-                text = doc.createTextNode(QString("%1").arg(point->lon));
+                text = doc.createTextNode(QString("%1").arg(point->lon, 0, 'g', 11));
                 lon.appendChild(text);
                 sample.appendChild(lon);
             }
@@ -503,6 +872,14 @@ PwxFileReader::writeRideFile(const QString cyclist, const RideFile *ride, QFile 
                 text = doc.createTextNode(QString("%1").arg(point->alt));
                 alt.appendChild(text);
                 sample.appendChild(alt);
+            }
+
+            // temp
+            if (ride->areDataPresent()->temp) {
+                QDomElement temp = doc.createElement("temp");
+                text = doc.createTextNode(QString("%1").arg(point->temp));
+                temp.appendChild(text);
+                sample.appendChild(temp);
             }
         }
     }

@@ -32,7 +32,7 @@ QProcess *getInterpreterProcess( QString path ) {
     antProcess->start( path );
 
     if (!antProcess->waitForStarted()) {
-      delete antProcess;
+      antProcess->deleteLater();
       antProcess = NULL;
     }
 
@@ -94,7 +94,7 @@ bool quarqInterpreterInstalled( void ) {
       }
 
       if (!installed)
-	std::cerr << "Cannot open qollector_interpret program, available from http://opensource.quarq.us/qollector_interpret." << std::endl;
+	//std::cerr << "Cannot open qollector_interpret program, available from http://opensource.quarq.us/qollector_interpret." << std::endl;
 
       checkedInstallation = true;
     }
@@ -107,11 +107,12 @@ static int antFileReaderRegistered = quarqInterpreterInstalled()
         "qla", "Quarq ANT+ Files", new QuarqFileReader())
     : 0;
 
-RideFile *QuarqFileReader::openRideFile(QFile &file, QStringList &errors) const
+RideFile *QuarqFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const
 {
     (void) errors;
     RideFile *rideFile = new RideFile();
     rideFile->setDeviceType("Quarq Qollector");
+    rideFile->setFileFormat("Quarq ANT+ Files (qla)");
     rideFile->setRecIntSecs(1.0);
 
     QuarqParser handler(rideFile);

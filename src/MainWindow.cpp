@@ -1,428 +1,653 @@
-/* 
+/*
  * Copyright (c) 2006 Sean C. Rhea (srhea@srhea.net)
+ * Copyright (c) 2013 Mark Liversedge (liversedge@gmail.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-#include "MainWindow.h"
-#include "AerolabWindow.h"
-#include "Aerolab.h"
-#include "GoogleMapControl.h"
-#include "AllPlotWindow.h"
-#include "AllPlot.h"
-#include "BestIntervalDialog.h"
-#include "ChooseCyclistDialog.h"
-#include "Colors.h"
-#include "Computrainer.h"
-#include "ConfigDialog.h"
-#include "CriticalPowerWindow.h"
-#include "GcRideFile.h"
-#ifdef GC_HAVE_KML
-#include "KmlRideFile.h"
-#endif
-#include "PwxRideFile.h"
-#include "LTMWindow.h"
-#include "PfPvWindow.h"
-#include "DownloadRideDialog.h"
-#include "ManualRideDialog.h"
-#include "HistogramWindow.h"
-#include "ModelWindow.h"
-#include "RealtimeWindow.h"
-#include "RideItem.h"
-#include "IntervalItem.h"
-#include "RideEditor.h"
-#include "RideFile.h"
-#include "RideSummaryWindow.h"
-#include "RideImportWizard.h"
-#include "QuarqRideFile.h"
-#include "RideMetadata.h"
-#include "RideMetric.h"
-#include "Settings.h"
-#include "TimeUtils.h"
-#include "Units.h"
-#include "WeeklySummaryWindow.h"
-#include "Zones.h"
-#include <assert.h>
+// QT
 #include <QApplication>
 #include <QtGui>
 #include <QRegExp>
-#include <qwt_plot_curve.h>
-#include <qwt_plot_picker.h>
-#include <qwt_plot_grid.h>
-#include <qwt_data.h>
-#include <boost/scoped_ptr.hpp>
-#include "RideCalendar.h"
-#include "DatePickerDialog.h"
-#include "ToolsDialog.h"
-#include "MetricAggregator.h"
-#include "SplitRideDialog.h"
-#include "PerformanceManagerWindow.h"
-#include "TrainWindow.h"
-#include "TwitterDialog.h"
+#include <QDesktopWidget>
+#include <QNetworkProxyQuery>
+#include <QMenuBar>
+#include <QStyle>
+#include <QTabBar>
+#include <QStyleFactory>
 
-#ifndef GC_VERSION
-#define GC_VERSION "(developer build)"
+// DATA STRUCTURES
+#include "MainWindow.h"
+#include "Context.h"
+#include "Athlete.h"
+
+#include "Colors.h"
+#include "RideCache.h"
+#include "RideItem.h"
+#include "IntervalItem.h"
+#include "RideFile.h"
+#include "Settings.h"
+#include "ErgDB.h"
+#include "Library.h"
+#include "LibraryParser.h"
+#include "TrainDB.h"
+#include "GcUpgrade.h"
+#include "HelpWhatsThis.h"
+
+// DIALOGS / DOWNLOADS / UPLOADS
+#include "AboutDialog.h"
+#include "ChooseCyclistDialog.h"
+#include "ConfigDialog.h"
+#include "DownloadRideDialog.h"
+#include "ManualRideDialog.h"
+#include "RideImportWizard.h"
+#include "ToolsDialog.h"
+#include "ToolsRhoEstimator.h"
+#include "SplitActivityWizard.h"
+#include "MergeActivityWizard.h"
+#include "GenerateHeatMapDialog.h"
+#include "BatchExportDialog.h"
+#ifdef GC_HAVE_KQOAUTH
+#include "TwitterDialog.h"
+#endif
+#include "ShareDialog.h"
+#include "WithingsDownload.h"
+#include "WorkoutWizard.h"
+#include "ErgDBDownloadDialog.h"
+#include "AddDeviceWizard.h"
+#ifdef GC_HAVE_SOAP
+#include "TPUploadDialog.h"
+#include "TPDownloadDialog.h"
+#endif
+#ifdef GC_HAVE_ICAL
+#include "CalDAV.h"
+#endif
+#include "CalendarDownload.h"
+
+// GUI Widgets
+#include "Tab.h"
+#include "GcToolBar.h"
+#include "HelpWindow.h"
+#include "HomeWindow.h"
+#include "GcScopeBar.h"
+#ifdef Q_OS_MAC
+#include "QtMacButton.h" // mac
+#include "QtMacSegmentedButton.h" // mac
+#else
+#include "QTFullScreen.h" // not mac!
+#include "../qtsolutions/segmentcontrol/qtsegmentcontrol.h"
 #endif
 
-bool
-MainWindow::parseRideFileName(const QString &name, QString *notesFileName, QDateTime *dt)
-{
-    static char rideFileRegExp[] = "^((\\d\\d\\d\\d)_(\\d\\d)_(\\d\\d)"
-                                   "_(\\d\\d)_(\\d\\d)_(\\d\\d))\\.(.+)$";
-    QRegExp rx(rideFileRegExp);
-    if (!rx.exactMatch(name))
-        return false;
-    assert(rx.numCaptures() == 8);
-    QDate date(rx.cap(2).toInt(), rx.cap(3).toInt(),rx.cap(4).toInt()); 
-    QTime time(rx.cap(5).toInt(), rx.cap(6).toInt(),rx.cap(7).toInt()); 
-    if ((! date.isValid()) || (! time.isValid())) {
-	QMessageBox::warning(this,
-			     tr("Invalid Ride File Name"),
-			     tr("Invalid date/time in filename:\n%1\nSkipping file...").arg(name)
-			     );
-	return false;
-    }
-    *dt = QDateTime(date, time);
-    *notesFileName = rx.cap(1) + ".notes";
-    return true;
-}
+// SEARCH / FILTER
+#include "NamedSearch.h"
+#include "SearchFilterBox.h"
 
-MainWindow::MainWindow(const QDir &home) : 
-    home(home), session(0), isclean(false),
-    zones_(new Zones), hrZones_(new HrZones), currentNotesChanged(false),
-    ride(NULL)
+#ifdef GC_HAVE_WFAPI
+#include "WFApi.h"
+#endif
+
+// We keep track of all theopen mainwindows
+QList<MainWindow *> mainwindows;
+QDesktopWidget *desktop = NULL;
+
+MainWindow::MainWindow(const QDir &home)
 {
+    /*----------------------------------------------------------------------
+     *  Bootstrap
+     *--------------------------------------------------------------------*/
     setAttribute(Qt::WA_DeleteOnClose);
+    mainwindows.append(this);  // add us to the list of open windows
+    init = false;
+#ifdef Q_OS_MAC
+    head = NULL; // early resize event causes a crash
+#endif
 
-    settings = GetApplicationSettings();
-
-    GCColor *GCColorSet = new GCColor(this); // get/keep colorset
-    GCColorSet->colorSet(); // shut up the compiler
-
-    QVariant unit = settings->value(GC_UNIT);
-    useMetricUnits = (unit.toString() == "Metric");
-
-    setWindowTitle(home.dirName());
-    settings->setValue(GC_SETTINGS_LAST, home.dirName());
+    // bootstrap
+    Context *context = new Context(this);
+    context->athlete = new Athlete(context, home);
 
     setWindowIcon(QIcon(":images/gc.png"));
+    setWindowTitle(context->athlete->home->root().dirName());
+    setContentsMargins(0,0,0,0);
     setAcceptDrops(true);
 
-    QFile zonesFile(home.absolutePath() + "/power.zones");
-    if (zonesFile.exists()) {
-        if (!zones_->read(zonesFile)) {
-            QMessageBox::critical(this, tr("Zones File Error"),
-				  zones_->errorString());
-        }
-	else if (! zones_->warningString().isEmpty())
-            QMessageBox::warning(this, tr("Reading Zones File"), zones_->warningString());
+    #ifdef GC_HAVE_WFAPI
+    WFApi *w = WFApi::getInstance(); // ensure created on main thread
+    w->apiVersion();//shutup compiler
+    #endif
+    Library::initialise(context->athlete->home->root());
+    QNetworkProxyQuery npq(QUrl("http://www.google.com"));
+    QList<QNetworkProxy> listOfProxies = QNetworkProxyFactory::systemProxyForQuery(npq);
+    if (listOfProxies.count() > 0) {
+        QNetworkProxy::setApplicationProxy(listOfProxies.first());
     }
 
-    QFile hrZonesFile(home.absolutePath() + "/hr.zones");
-    if (hrZonesFile.exists()) {
-        if (!hrZones_->read(hrZonesFile)) {
-            QMessageBox::critical(this, tr("Hr Zones File Error"),
-                                  hrZones_->errorString());
-        }
-        else if (! hrZones_->warningString().isEmpty())
-            QMessageBox::warning(this, tr("Reading Hr Zones File"), hrZones_->warningString());
-    }
+    if (desktop == NULL) desktop = QApplication::desktop();
+    static const QIcon hideIcon(":images/toolbar/main/hideside.png");
+    static const QIcon rhideIcon(":images/toolbar/main/hiderside.png");
+    static const QIcon showIcon(":images/toolbar/main/showside.png");
+    static const QIcon rshowIcon(":images/toolbar/main/showrside.png");
+    static const QIcon tabIcon(":images/toolbar/main/tab.png");
+    static const QIcon tileIcon(":images/toolbar/main/tile.png");
+    static const QIcon fullIcon(":images/toolbar/main/togglefull.png");
 
-    QVariant geom = settings->value(GC_SETTINGS_MAIN_GEOM);
-    if (geom == QVariant())
-        resize(640, 480);
-    else
-        setGeometry(geom.toRect());
-
-    splitter = new QSplitter;
-    splitter->setContentsMargins(10, 20, 10, 10); // attempting to follow some UI guides
-
-    // need to get rideNotes before metadata!
-    rideNotes = new QTextEdit;
-
-    // need to get metadata in before calendar!
-    _rideMetadata = new RideMetadata(this);
-
-    // Analysis toolbox contents
-    calendar = new RideCalendar(this);
-    calendar->setHome(home);
-
-    treeWidget = new QTreeWidget;
-    treeWidget->setColumnCount(3);
-    treeWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-    // TODO: Test this on various systems with differing font settings (looks good on Leopard :)
-    treeWidget->header()->resizeSection(0,70);
-    treeWidget->header()->resizeSection(1,95);
-    treeWidget->header()->resizeSection(2,70);
-    //treeWidget->setMaximumWidth(250);
-    treeWidget->header()->hide();
-    treeWidget->setAlternatingRowColors (true);
-    treeWidget->setIndentation(5);
-    treeWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-
-    allRides = new QTreeWidgetItem(treeWidget, FOLDER_TYPE);
-    allRides->setText(0, tr("All Rides"));
-    treeWidget->expandItem(allRides);
-
-    intervalWidget = new QTreeWidget(this);
-    intervalWidget->setColumnCount(1);
-    intervalWidget->setIndentation(5);
-    intervalWidget->setSortingEnabled(false);
-    intervalWidget->header()->hide();
-    intervalWidget->setAlternatingRowColors (true);
-    intervalWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
-    intervalWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    intervalWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    intervalWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-
-    allIntervals = new QTreeWidgetItem(intervalWidget, FOLDER_TYPE);
-    allIntervals->setText(0, tr("Intervals"));
-    intervalWidget->expandItem(allIntervals);
-
-    intervalsplitter = new QSplitter(this);
-    intervalsplitter->setOrientation(Qt::Vertical);
-    intervalsplitter->addWidget(treeWidget);
-    intervalsplitter->setCollapsible(0, true);
-    intervalsplitter->addWidget(intervalWidget);
-    intervalsplitter->setCollapsible(1, true);
-
-    leftLayout = new QSplitter;
-    viewSelection = new ViewSelection(this, VIEW_ANALYSIS);
-    leftLayout->setOrientation(Qt::Vertical);
-    leftLayout->addWidget(viewSelection);
-    leftLayout->setCollapsible(0, false);
-    leftLayout->addWidget(calendar);
-    leftLayout->setCollapsible(1, true);
-    leftLayout->addWidget(intervalsplitter);
-    leftLayout->setCollapsible(2, false);
-
-    splitter->addWidget(leftLayout);
-    splitter->setCollapsible(0, true);
-    QVariant calendarSizes = settings->value(GC_SETTINGS_CALENDAR_SIZES);
-    if (calendarSizes != QVariant()) {
-        leftLayout->restoreState(calendarSizes.toByteArray());
-    }
-
-    QTreeWidgetItem *last = NULL;
-    QStringListIterator i(RideFileFactory::instance().listRideFiles(home));
-    while (i.hasNext()) {
-        QString name = i.next(), notesFileName;
-        QDateTime dt;
-        if (parseRideFileName(name, &notesFileName, &dt)) {
-            last = new RideItem(RIDE_TYPE, home.path(), 
-                                name, dt, zones(), hrZones(), notesFileName, this);
-            allRides->addChild(last);
-	    calendar->update();
-        }
-    }
-
-    tabWidget = new QTabWidget;
-    tabWidget->setUsesScrollButtons(true);
-
-    // setup trainWindow
-    trainWindow = new TrainWindow(this, home);
-
-    // Setup the two views
-    // add the two views; Analysis and Train
-    views = new QStackedWidget(this);
-    setCentralWidget(views);
-    views->addWidget(splitter);          // Analysis stuff
-    views->addWidget(trainWindow);      // Train Stuff
-    views->setCurrentIndex(0);          // default to Analysis
-
-    rideSummaryWindow = new RideSummaryWindow(this);
-    QLabel *notesLabel = new QLabel(tr("Notes"));
-    notesLabel->setMaximumHeight(30);
-
-    summarySplitter = new QSplitter;
-    summarySplitter->setContentsMargins(0, 0, 0, 0);
-    summarySplitter->setOrientation(Qt::Vertical);
-    summarySplitter->addWidget(rideSummaryWindow);
-    summarySplitter->setCollapsible(0, true);
-    summarySplitter->addWidget(_rideMetadata);
-    summarySplitter->setCollapsible(1, true);
-
-
-    // Use last remembered size or set to a sensible default
-    QVariant summarySizes = settings->value(GC_SETTINGS_SUMMARYSPLITTER_SIZES);
-    if (summarySizes != QVariant())
-        summarySplitter->restoreState(summarySizes.toByteArray());
-    else {
-        QList<int> sizes;
-        sizes.append(650);
-        sizes.append(350);
-        summarySplitter->setSizes(sizes);
-    }
-
-    tabs.append(TabInfo(summarySplitter, tr("Ride Summary")));
-
-    /////////////////////////// Ride Plot Tab ///////////////////////////
-    allPlotWindow = new AllPlotWindow(this);
-    tabs.append(TabInfo(allPlotWindow, tr("Ride Plot")));
-    splitter->addWidget(tabWidget);
-    splitter->setCollapsible(1, true);
-
-    QVariant splitterSizes = settings->value(GC_SETTINGS_SPLITTER_SIZES); 
-    if (splitterSizes != QVariant())
-        splitter->restoreState(splitterSizes.toByteArray());
-    else {
-        QList<int> sizes;
-        sizes.append(250);
-        sizes.append(390);
-        splitter->setSizes(sizes);
-    }
-
-    ////////////////////// Critical Power Plot Tab //////////////////////
-
-    criticalPowerWindow = new CriticalPowerWindow(home, this);
-    tabs.append(TabInfo(criticalPowerWindow, tr("Critical Power")));
-
-    //////////////////////// Power Histogram Tab ////////////////////////
-
-    histogramWindow = new HistogramWindow(this);
-    tabs.append(TabInfo(histogramWindow, tr("Histograms")));
-    
-    //////////////////////// Pedal Force/zones_Velocity Plot ////////////////////////
-
-    pfPvWindow = new PfPvWindow(this);
-    tabs.append(TabInfo(pfPvWindow, tr("PF/PV")));
-
-    //////////////////////// 3d Model Window ////////////////////////////
-
-#ifdef GC_HAVE_QWTPLOT3D
-    modelWindow = new ModelWindow(this, home);
-    tabs.append(TabInfo(modelWindow, tr("3D")));
+#ifndef Q_OS_MAC
+    fullScreen = new QTFullScreen(this);
 #endif
 
-    //////////////////////// Weekly Summary ////////////////////////
-    
-    // add daily distance / duration graph:
-    weeklySummaryWindow = new WeeklySummaryWindow(useMetricUnits, this);
-    tabs.append(TabInfo(weeklySummaryWindow, tr("Weekly Summary")));
+    // if no workout directory is configured, default to the
+    // top level GoldenCheetah directory
+    if (appsettings->value(NULL, GC_WORKOUTDIR).toString() == "")
+        appsettings->setValue(GC_WORKOUTDIR, QFileInfo(context->athlete->home->root().canonicalPath() + "/../").canonicalPath());
 
-    //////////////////////// LTM ////////////////////////
+    /*----------------------------------------------------------------------
+     *  GUI setup
+     *--------------------------------------------------------------------*/
+     if (appsettings->contains(GC_SETTINGS_MAIN_GEOM)) {
+         restoreGeometry(appsettings->value(this, GC_SETTINGS_MAIN_GEOM).toByteArray());
+         restoreState(appsettings->value(this, GC_SETTINGS_MAIN_STATE).toByteArray());
+     } else {
+         QRect screenSize = desktop->availableGeometry();
+         // first run -- lets set some sensible defaults...
+         // lets put it in the middle of screen 1
+         struct SizeSettings app = GCColor::defaultSizes(screenSize.height(), screenSize.width());
 
-    // long term metrics window
-    metricDB = new MetricAggregator(this, home, zones(), hrZones()); // just to catch config updates!
-    ltmWindow = new LTMWindow(this, useMetricUnits, home);
-    tabs.append(TabInfo(ltmWindow, tr("Metrics")));
+         // center on the available screen (minus toolbar/sidebar)
+         move((screenSize.width()-screenSize.x())/2 - app.width/2,
+              (screenSize.height()-screenSize.y())/2 - app.height/2);
 
-    //////////////////////// Performance Manager  ////////////////////////
+         // set to the right default
+         resize(app.width, app.height);
 
-    performanceManagerWindow = new PerformanceManagerWindow(this);
-    tabs.append(TabInfo(performanceManagerWindow, tr("PM")));
+         // set all the default font sizes
+         appsettings->setValue(GC_FONT_DEFAULT_SIZE, app.defaultFont);
+         appsettings->setValue(GC_FONT_TITLES_SIZE, app.titleFont);
+         appsettings->setValue(GC_FONT_CHARTMARKERS_SIZE, app.markerFont);
+         appsettings->setValue(GC_FONT_CHARTLABELS_SIZE, app.labelFont);
+         appsettings->setValue(GC_FONT_CALENDAR_SIZE, app.calendarFont);
 
+     }
 
-    ///////////////////////////// Aerolab //////////////////////////////////
+     // store "last_openend" athlete for next time
+     appsettings->setValue(GC_SETTINGS_LAST, context->athlete->home->root().dirName());
 
-    aerolabWindow = new AerolabWindow(this);
-    tabs.append(TabInfo(aerolabWindow, tr("Aerolab")));
+    /*----------------------------------------------------------------------
+     * ScopeBar
+     *--------------------------------------------------------------------*/
+    scopebar = new GcScopeBar(context);
+    connect(scopebar, SIGNAL(selectDiary()), this, SLOT(selectDiary()));
+    connect(scopebar, SIGNAL(selectHome()), this, SLOT(selectHome()));
+    connect(scopebar, SIGNAL(selectAnal()), this, SLOT(selectAnalysis()));
+    connect(scopebar, SIGNAL(selectTrain()), this, SLOT(selectTrain()));
+    connect(scopebar, SIGNAL(selectInterval()), this, SLOT(selectInterval()));
 
-    ///////////////////////////// GoogleMapsb //////////////////////////////////
+    /*----------------------------------------------------------------------
+     * What's this Context Help
+     *--------------------------------------------------------------------*/
 
-    googleMap = new GoogleMapControl(this);
-    tabs.append(TabInfo(googleMap, tr("Map")));
+    // Help for the whole window
+    HelpWhatsThis *help = new HelpWhatsThis(this);
+    this->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::Default));
+    // add Help Button
+    QAction *myHelper = QWhatsThis::createAction (this);
+    this->addAction(myHelper);
 
-    ///////////////////////////// Editor  //////////////////////////////////
-
-    rideEdit = new RideEditor(this);
-    tabs.append(TabInfo(rideEdit, tr("Editor")));
-
-    ////////////////////////////// Signals ////////////////////////////// 
-
-    connect(calendar, SIGNAL(clicked(const QDate &)),
-            this, SLOT(dateChanged(const QDate &)));
-    connect(leftLayout, SIGNAL(splitterMoved(int,int)),
-            this, SLOT(leftLayoutMoved()));
-    connect(treeWidget,SIGNAL(customContextMenuRequested(const QPoint &)),
-            this, SLOT(showTreeContextMenuPopup(const QPoint &)));
-    connect(treeWidget, SIGNAL(itemSelectionChanged()),
-            this, SLOT(rideTreeWidgetSelectionChanged()));
-    connect(splitter, SIGNAL(splitterMoved(int,int)), 
-            this, SLOT(splitterMoved()));
-    connect(summarySplitter, SIGNAL(splitterMoved(int,int)),
-            this, SLOT(summarySplitterMoved()));
-    connect(tabWidget, SIGNAL(currentChanged(int)), 
-            this, SLOT(tabChanged(int)));
-    connect(rideNotes, SIGNAL(textChanged()),
-            this, SLOT(notesChanged()));
-    connect(intervalWidget,SIGNAL(customContextMenuRequested(const QPoint &)),
-            this, SLOT(showContextMenuPopup(const QPoint &)));
-    connect(intervalWidget,SIGNAL(itemSelectionChanged()),
-            this, SLOT(intervalTreeWidgetSelectionChanged()));
-    connect(intervalWidget,SIGNAL(itemChanged(QTreeWidgetItem *,int)),
-            this, SLOT(intervalEdited(QTreeWidgetItem*, int)));
-
-    /////////////////////////////// Menus ///////////////////////////////
-
-    QMenu *fileMenu = menuBar()->addMenu(tr("&Cyclist"));
-    fileMenu->addAction(tr("&New..."), this,
-                        SLOT(newCyclist()), tr("Ctrl+N"));
-    fileMenu->addAction(tr("&Open..."), this,
-                        SLOT(openCyclist()), tr("Ctrl+O"));
-    fileMenu->addAction(tr("&Quit"), this,
-                        SLOT(close()), tr("Ctrl+Q"));
-
-    QMenu *rideMenu = menuBar()->addMenu(tr("&Ride"));
-    rideMenu->addAction(tr("&Download from device..."), this,
-                        SLOT(downloadRide()), tr("Ctrl+D"));
-    rideMenu->addAction(tr("&Import from file..."), this,
-                        SLOT (importFile()), tr ("Ctrl+I"));
-    rideMenu->addAction(tr("&Manual ride entry..."), this,
-                        SLOT(manualRide()), tr("Ctrl+M"));
-    rideMenu->addSeparator ();
-    rideMenu->addAction(tr("&Export to CSV..."), this,
-                        SLOT(exportCSV()), tr("Ctrl+E"));
-    rideMenu->addAction(tr("Export to GC..."), this,
-                        SLOT(exportGC()));
-#ifdef GC_HAVE_KML
-    rideMenu->addAction(tr("&Export to KML..."), this,
-                        SLOT(exportKML()));
+#if 0
+    // Add chart is on the scope bar
+    chartMenu = new QMenu(this);
+    QStyle *styler = QStyleFactory::create("fusion");
+    QPushButton *newchart = new QPushButton("+", this);
+    scopebar->addWidget(newchart);
+    newchart->setStyle(styler);
+    newchart->setFixedHeight(20);
+    newchart->setFixedWidth(24);
+    newchart->setFlat(true);
+    newchart->setFocusPolicy(Qt::NoFocus);
+    newchart->setToolTip(tr("Add Chart"));
+    newchart->setAutoFillBackground(false);
+    newchart->setAutoDefault(false);
+    newchart->setMenu(chartMenu);
+    connect(chartMenu, SIGNAL(aboutToShow()), this, SLOT(setChartMenu()));
+    connect(chartMenu, SIGNAL(triggered(QAction*)), this, SLOT(addChart(QAction*)));
 #endif
-    rideMenu->addAction(tr("Export to PWX..."), this,
-                        SLOT(exportPWX()));
-    rideMenu->addSeparator ();
-    rideMenu->addAction(tr("&Save ride"), this,
-                        SLOT(saveRide()), tr("Ctrl+S"));
-    rideMenu->addAction(tr("D&elete ride..."), this,
-                        SLOT(deleteRide()));
-    rideMenu->addAction(tr("Split &ride..."), this,
-                        SLOT(splitRide()));
-    rideMenu->addSeparator ();
-    rideMenu->addAction(tr("Find &best intervals..."), this,
-                        SLOT(findBestIntervals()), tr ("Ctrl+B"));
-    rideMenu->addAction(tr("Find power &peaks..."), this,
-                        SLOT(findPowerPeaks()), tr ("Ctrl+P"));
 
+    /*----------------------------------------------------------------------
+     *  Mac Toolbar
+     *--------------------------------------------------------------------*/
+#ifdef Q_OS_MAC
+#if QT_VERSION > 0x50000
+#if QT_VERSION >= 0x50201
+    setUnifiedTitleAndToolBarOnMac(true);
+#endif
+    head = addToolBar(context->athlete->cyclist);
+    head->setObjectName(context->athlete->cyclist);
+    head->setContentsMargins(20,0,20,0);
+    head->setFloatable(false);
+    head->setMovable(false);
+
+    // widgets
+    QWidget *macAnalButtons = new QWidget(this);
+    macAnalButtons->setContentsMargins(20,5,20,0);
+
+#else
+    setUnifiedTitleAndToolBarOnMac(true);
+    head = addToolBar(context->athlete->cyclist);
+    head->setContentsMargins(0,0,0,0);
+
+    // widgets
+    QWidget *macAnalButtons = new QWidget(this);
+    macAnalButtons->setContentsMargins(0,0,20,0);
+
+#endif
+
+    // lhs buttons
+    QHBoxLayout *lb = new QHBoxLayout(macAnalButtons);
+    lb->setContentsMargins(0,0,10,8);
+    lb->setSpacing(0);
+    import = new QtMacButton(this, QtMacButton::TexturedRounded);
+    QPixmap *importImg = new QPixmap(":images/mac/download.png");
+    import->setImage(importImg);
+    import->setToolTip("Download");
+    HelpWhatsThis *helpImport = new HelpWhatsThis(import);
+    import->setWhatsThis(helpImport->getWhatsThisText(HelpWhatsThis::ToolBar_Download));
+    lb->addWidget(import);
+    lb->addWidget(new Spacer(this));
+
+    compose = new QtMacButton(this, QtMacButton::TexturedRounded);
+    QPixmap *composeImg = new QPixmap(":images/mac/compose.png");
+    compose->setImage(composeImg);
+    compose->setToolTip("Create");
+    lb->addWidget(compose);
+    HelpWhatsThis *helpCompose = new HelpWhatsThis(compose);
+    compose->setWhatsThis(helpCompose->getWhatsThisText(HelpWhatsThis::ToolBar_Manual));
+
+    // connect to actions
+    connect(import, SIGNAL(clicked(bool)), this, SLOT(downloadRide()));
+    connect(compose, SIGNAL(clicked(bool)), this, SLOT(manualRide()));
+
+    lb->addWidget(new Spacer(this));
+
+    // activity actions .. peaks, split, delete
+    QWidget *acts = new QWidget(this);
+    acts->setContentsMargins(0,0,0,0);
+    QHBoxLayout *pp = new QHBoxLayout(acts);
+    pp->setContentsMargins(0,0,0,0);
+    pp->setContentsMargins(0,0,0,0);
+    pp->setSpacing(5);
+    sidebar = new QtMacButton(this, QtMacButton::TexturedRounded);
+    QPixmap *sidebarImg = new QPixmap(":images/mac/sidebar.png");
+    sidebar->setImage(sidebarImg);
+    sidebar->setMinimumSize(25, 25);
+    sidebar->setMaximumSize(25, 25);
+    sidebar->setToolTip("Sidebar");
+    sidebar->setSelected(true); // assume always start up with sidebar selected
+    HelpWhatsThis *helpSideBar = new HelpWhatsThis(sidebar);
+    sidebar->setWhatsThis(helpSideBar->getWhatsThisText(HelpWhatsThis::ToolBar_ToggleSidebar));
+
+    lowbar = new QtMacButton(this, QtMacButton::TexturedRounded);
+    QPixmap *lowbarImg = new QPixmap(":images/mac/lowbar.png");
+    lowbar->setImage(lowbarImg);
+    lowbar->setMinimumSize(25, 25);
+    lowbar->setMaximumSize(25, 25);
+    lowbar->setToolTip("Compare");
+    lowbar->setSelected(false); // assume always start up with lowbar deselected
+    HelpWhatsThis *helpLowBar = new HelpWhatsThis(lowbar);
+    lowbar->setWhatsThis(helpLowBar->getWhatsThisText(HelpWhatsThis::ToolBar_ToggleComparePane));
+
+    actbuttons = new QtMacSegmentedButton(3, acts);
+    actbuttons->setWidth(115);
+    actbuttons->setNoSelect();
+    actbuttons->setImage(0, new QPixmap(":images/mac/stop.png"));
+    actbuttons->setImage(1, new QPixmap(":images/mac/split.png"));
+    actbuttons->setImage(2, new QPixmap(":images/mac/trash.png"));
+    pp->addWidget(actbuttons);
+    lb->addWidget(acts);
+    connect(actbuttons, SIGNAL(clicked(int,bool)), this, SLOT(actionClicked(int)));
+
+    lb->addWidget(new Spacer(this));
+
+    QWidget *viewsel = new QWidget(this);
+    viewsel->setContentsMargins(0,0,0,0);
+    QHBoxLayout *pq = new QHBoxLayout(viewsel);
+    pq->setContentsMargins(0,0,0,0);
+    pq->setSpacing(5);
+    QHBoxLayout *ps = new QHBoxLayout;
+    ps->setContentsMargins(0,0,0,0);
+    ps->setSpacing (2); // low and sidebar button close together
+    ps->addWidget(sidebar);
+    ps->addWidget(lowbar);
+    ps->addStretch();
+    pq->addLayout(ps);
+
+    styleSelector = new QtMacSegmentedButton(2, viewsel);
+    styleSelector->setWidth(80); // actually its 80 but we want a 30px space between is and the searchbox
+    styleSelector->setImage(0, new QPixmap(":images/mac/tabbed.png"), 24);
+    styleSelector->setImage(1, new QPixmap(":images/mac/tiled.png"), 24);
+    pq->addWidget(styleSelector);
+    connect(sidebar, SIGNAL(clicked(bool)), this, SLOT(toggleSidebar()));
+    connect(lowbar, SIGNAL(clicked(bool)), this, SLOT(toggleLowbar()));
+    connect(styleSelector, SIGNAL(clicked(int,bool)), this, SLOT(toggleStyle()));
+
+    // setup Mac thetoolbar
+    head->addWidget(macAnalButtons);
+    head->addWidget(new Spacer(this));
+    head->addWidget(scopebar);
+    head->addWidget(new Spacer(this));
+    head->addWidget(viewsel);
+
+    searchBox = new SearchFilterBox(this,context,false);
+#if QT_VERSION > 0x50000
+    QStyle *toolStyle = QStyleFactory::create("fusion");
+#else
+    QStyle *toolStyle = QStyleFactory::create("Cleanlooks");
+#endif
+    searchBox->setStyle(toolStyle);
+    searchBox->setFixedWidth(200);
+    head->addWidget(searchBox);
+    connect(searchBox, SIGNAL(searchResults(QStringList)), this, SLOT(setFilter(QStringList)));
+    connect(searchBox, SIGNAL(searchClear()), this, SLOT(clearFilter()));
+
+#endif
+
+    /*----------------------------------------------------------------------
+     *  Windows and Linux Toolbar
+     *--------------------------------------------------------------------*/
+#ifndef Q_OS_MAC
+
+    head = new GcToolBar(this);
+
+#if QT_VERSION > 0x50000
+    QStyle *toolStyle = QStyleFactory::create("fusion");
+#else
+    QStyle *toolStyle = QStyleFactory::create("Cleanlooks");
+#endif
+    QPalette metal;
+    metal.setColor(QPalette::Button, QColor(215,215,215));
+
+    // get those icons
+    importIcon = iconFromPNG(":images/mac/download.png");
+    composeIcon = iconFromPNG(":images/mac/compose.png");
+    intervalIcon = iconFromPNG(":images/mac/stop.png");
+    splitIcon = iconFromPNG(":images/mac/split.png");
+    deleteIcon = iconFromPNG(":images/mac/trash.png");
+    sidebarIcon = iconFromPNG(":images/mac/sidebar.png");
+    lowbarIcon = iconFromPNG(":images/mac/lowbar.png");
+    tabbedIcon = iconFromPNG(":images/mac/tabbed.png");
+    tiledIcon = iconFromPNG(":images/mac/tiled.png");
+    QSize isize(19,19);
+
+    Spacer *spacerl = new Spacer(this);
+    spacerl->setFixedWidth(5);
+
+    import = new QPushButton(this);
+    import->setIcon(importIcon);
+    import->setIconSize(isize);
+    import->setFixedHeight(25);
+    import->setStyle(toolStyle);
+    import->setToolTip(tr("Download from Device"));
+    import->setPalette(metal);
+    HelpWhatsThis *helpImport = new HelpWhatsThis(import);
+    import->setWhatsThis(helpImport->getWhatsThisText(HelpWhatsThis::ToolBar_Download));
+    connect(import, SIGNAL(clicked(bool)), this, SLOT(downloadRide()));
+
+    compose = new QPushButton(this);
+    compose->setIcon(composeIcon);
+    compose->setIconSize(isize);
+    compose->setFixedHeight(25);
+    compose->setStyle(toolStyle);
+    compose->setToolTip(tr("Create Manual Activity"));
+    compose->setPalette(metal);
+    connect(compose, SIGNAL(clicked(bool)), this, SLOT(manualRide()));
+    HelpWhatsThis *helpCompose = new HelpWhatsThis(compose);
+    compose->setWhatsThis(helpCompose->getWhatsThisText(HelpWhatsThis::ToolBar_Manual));
+
+    lowbar = new QPushButton(this);
+    lowbar->setIcon(lowbarIcon);
+    lowbar->setIconSize(isize);
+    lowbar->setFixedHeight(25);
+    lowbar->setStyle(toolStyle);
+    lowbar->setToolTip(tr("Toggle Compare Pane"));
+    lowbar->setPalette(metal);
+    connect(lowbar, SIGNAL(clicked(bool)), this, SLOT(toggleLowbar()));
+    HelpWhatsThis *helpLowBar = new HelpWhatsThis(lowbar);
+    lowbar->setWhatsThis(helpLowBar->getWhatsThisText(HelpWhatsThis::ToolBar_ToggleComparePane));
+
+    sidebar = new QPushButton(this);
+    sidebar->setIcon(sidebarIcon);
+    sidebar->setIconSize(isize);
+    sidebar->setFixedHeight(25);
+    sidebar->setStyle(toolStyle);
+    sidebar->setToolTip(tr("Toggle Sidebar"));
+    sidebar->setPalette(metal);
+    connect(sidebar, SIGNAL(clicked(bool)), this, SLOT(toggleSidebar()));
+    HelpWhatsThis *helpSideBar = new HelpWhatsThis(sidebar);
+    sidebar->setWhatsThis(helpSideBar->getWhatsThisText(HelpWhatsThis::ToolBar_ToggleSidebar));
+
+    actbuttons = new QtSegmentControl(this);
+    actbuttons->setStyle(toolStyle);
+    actbuttons->setIconSize(isize);
+    actbuttons->setCount(3);
+    actbuttons->setSegmentIcon(0, intervalIcon);
+    actbuttons->setSegmentIcon(1, splitIcon);
+    actbuttons->setSegmentIcon(2, deleteIcon);
+    actbuttons->setSelectionBehavior(QtSegmentControl::SelectNone); //wince. spelling. ugh
+    actbuttons->setFixedHeight(25);
+    actbuttons->setSegmentToolTip(0, tr("Find Intervals..."));
+    actbuttons->setSegmentToolTip(1, tr("Split Activity..."));
+    actbuttons->setSegmentToolTip(2, tr("Delete Activity"));
+    actbuttons->setPalette(metal);
+    connect(actbuttons, SIGNAL(segmentSelected(int)), this, SLOT(actionClicked(int)));
+
+    styleSelector = new QtSegmentControl(this);
+    styleSelector->setStyle(toolStyle);
+    styleSelector->setIconSize(isize);
+    styleSelector->setCount(2);
+    styleSelector->setSegmentIcon(0, tabbedIcon);
+    styleSelector->setSegmentIcon(1, tiledIcon);
+    styleSelector->setSegmentToolTip(0, tr("Tabbed View"));
+    styleSelector->setSegmentToolTip(1, tr("Tiled View"));
+    styleSelector->setSelectionBehavior(QtSegmentControl::SelectOne); //wince. spelling. ugh
+    styleSelector->setFixedHeight(25);
+    styleSelector->setPalette(metal);
+    connect(styleSelector, SIGNAL(segmentSelected(int)), this, SLOT(setStyleFromSegment(int))); //avoid toggle infinitely
+
+    head->addWidget(spacerl);
+    head->addWidget(import);
+    head->addWidget(compose);
+    head->addWidget(actbuttons);
+
+    head->addStretch();
+    head->addWidget(scopebar);
+    head->addStretch();
+    head->addWidget(sidebar);
+    head->addWidget(lowbar);
+    head->addWidget(styleSelector);
+
+    // add a search box on far right, but with a little space too
+    searchBox = new SearchFilterBox(this,context,false);
+    searchBox->setStyle(toolStyle);
+    searchBox->setFixedWidth(200);
+    head->addWidget(searchBox);
+    connect(searchBox, SIGNAL(searchResults(QStringList)), this, SLOT(setFilter(QStringList)));
+    connect(searchBox, SIGNAL(searchClear()), this, SLOT(clearFilter()));
+    HelpWhatsThis *helpSearchBox = new HelpWhatsThis(searchBox);
+    searchBox->setWhatsThis(helpSearchBox->getWhatsThisText(HelpWhatsThis::SearchFilterBox));
+
+    Spacer *spacer = new Spacer(this);
+    spacer->setFixedWidth(5);
+    head->addWidget(spacer);
+#endif
+
+    /*----------------------------------------------------------------------
+     * Central Widget
+     *--------------------------------------------------------------------*/
+
+    tabbar = new DragBar(this);
+    tabbar->setTabsClosable(true);
+#ifdef Q_OS_MAC
+    tabbar->setDocumentMode(true);
+#endif
+
+    tabStack = new QStackedWidget(this);
+    currentTab = new Tab(context);
+
+    // first tab
+    tabs.insert(currentTab->context->athlete->home->root().dirName(), currentTab);
+
+    // stack, list and bar all share a common index
+    tabList.append(currentTab);
+    tabbar->addTab(currentTab->context->athlete->home->root().dirName());
+    tabStack->addWidget(currentTab);
+    tabStack->setCurrentIndex(0);
+
+    connect(tabbar, SIGNAL(dragTab(int)), this, SLOT(switchTab(int)));
+    connect(tabbar, SIGNAL(currentChanged(int)), this, SLOT(switchTab(int)));
+    connect(tabbar, SIGNAL(tabCloseRequested(int)), this, SLOT(closeTabClicked(int)));
+
+    /*----------------------------------------------------------------------
+     * Central Widget
+     *--------------------------------------------------------------------*/
+
+    QWidget *central = new QWidget(this);
+    setContentsMargins(0,0,0,0);
+    central->setContentsMargins(0,0,0,0);
+    QVBoxLayout *mainLayout = new QVBoxLayout(central);
+    mainLayout->setSpacing(0);
+    mainLayout->setContentsMargins(0,0,0,0);
+#ifndef Q_OS_MAC // nonmac toolbar on main view -- its not
+                 // unified with the title bar.
+    mainLayout->addWidget(head);
+#endif
+    mainLayout->addWidget(tabbar);
+#if (defined Q_OS_MAC) && (QT_VERSION >= 0x50201)
+    blackline = new QWidget(this);
+    blackline->setContentsMargins(0,0,0,0);
+    blackline->setFixedHeight(1);
+    QPalette linePalette;
+    linePalette.setBrush(backgroundRole(), Qt::darkGray);
+    blackline->setPalette(linePalette);
+    blackline->setAutoFillBackground(true);
+    mainLayout->addWidget(blackline);
+#endif
+    mainLayout->addWidget(tabStack);
+    setCentralWidget(central);
+
+    /*----------------------------------------------------------------------
+     * Application Menus
+     *--------------------------------------------------------------------*/
+#ifdef WIN32
+    QString menuColorString = (GCColor::isFlat() ? GColor(CCHROME).name() : "rgba(225,225,225)");
+    menuBar()->setStyleSheet(QString("QMenuBar { color: black; background: %1; }"
+                             "QMenuBar::item { color: black; background: %1; }").arg(menuColorString));
+    menuBar()->setContentsMargins(0,0,0,0);
+#endif
+
+    // ATHLETE (FILE) MENU
+    QMenu *fileMenu = menuBar()->addMenu(tr("&Athlete"));
+
+    openWindowMenu = fileMenu->addMenu(tr("Open &Window"));
+    openTabMenu = fileMenu->addMenu(tr("Open &Tab"));
+    connect(openWindowMenu, SIGNAL(aboutToShow()), this, SLOT(setOpenWindowMenu()));
+    connect(openTabMenu, SIGNAL(aboutToShow()), this, SLOT(setOpenTabMenu()));
+
+    windowMapper = new QSignalMapper(this); // maps each option
+    connect(windowMapper, SIGNAL(mapped(const QString &)), this, SLOT(openWindow(const QString &)));
+
+    tabMapper = new QSignalMapper(this); // maps each option
+    connect(tabMapper, SIGNAL(mapped(const QString &)), this, SLOT(openTab(const QString &)));
+
+    fileMenu->addSeparator();
+    fileMenu->addAction(tr("Close Window"), this, SLOT(closeWindow()));
+    fileMenu->addAction(tr("&Close Tab"), this, SLOT(closeTab()));
+    fileMenu->addAction(tr("&Quit All Windows"), this, SLOT(closeAll()), tr("Ctrl+Q"));
+
+    HelpWhatsThis *fileMenuHelp = new HelpWhatsThis(fileMenu);
+    fileMenu->setWhatsThis(fileMenuHelp->getWhatsThisText(HelpWhatsThis::MenuBar_Athlete));
+
+    // ACTIVITY MENU
+    QMenu *rideMenu = menuBar()->addMenu(tr("A&ctivity"));
+    rideMenu->addAction(tr("&Download from device..."), this, SLOT(downloadRide()), tr("Ctrl+D"));
+    rideMenu->addAction(tr("&Import from file..."), this, SLOT (importFile()), tr ("Ctrl+I"));
+    rideMenu->addAction(tr("&Manual entry..."), this, SLOT(manualRide()), tr("Ctrl+M"));
+    rideMenu->addSeparator ();
+    shareAction = new QAction(tr("Share Online..."), this);
+    shareAction->setShortcut(tr("Ctrl+U"));
+    connect(shareAction, SIGNAL(triggered(bool)), this, SLOT(share()));
+    rideMenu->addAction(shareAction);
+    rideMenu->addAction(tr("&Export..."), this, SLOT(exportRide()), tr("Ctrl+E"));
+    rideMenu->addAction(tr("&Batch export..."), this, SLOT(exportBatch()), tr("Ctrl+B"));
+#ifdef GC_HAVE_SOAP
+    rideMenu->addSeparator ();
+    rideMenu->addAction(tr("&Upload to TrainingPeaks"), this, SLOT(uploadTP()), tr("Ctrl+T"));
+    rideMenu->addAction(tr("Synchronise TrainingPeaks..."), this, SLOT(downloadTP()), tr(""));
+#endif
+
+#ifdef GC_HAVE_KQOAUTH
+    tweetAction = new QAction(tr("Tweet activity"), this);
+    connect(tweetAction, SIGNAL(triggered(bool)), this, SLOT(tweetRide()));
+    rideMenu->addAction(tweetAction);
+#endif
+
+    rideMenu->addSeparator ();
+    rideMenu->addAction(tr("&Save activity"), this, SLOT(saveRide()), tr("Ctrl+S"));
+    rideMenu->addAction(tr("D&elete activity..."), this, SLOT(deleteRide()));
+    rideMenu->addAction(tr("Split &activity..."), this, SLOT(splitRide()));
+    rideMenu->addAction(tr("Combine activities..."), this, SLOT(mergeRide()));
+    rideMenu->addSeparator ();
+
+    HelpWhatsThis *helpRideMenu = new HelpWhatsThis(rideMenu);
+    rideMenu->setWhatsThis(helpRideMenu->getWhatsThisText(HelpWhatsThis::MenuBar_Activity));
+
+    // TOOLS MENU
     QMenu *optionsMenu = menuBar()->addMenu(tr("&Tools"));
-    optionsMenu->addAction(tr("&Options..."), this, 
-                           SLOT(showOptions()), tr("Ctrl+O")); 
-    optionsMenu->addAction(tr("Critical Power Calculator"), this,
-                           SLOT(showTools()));
-    //optionsMenu->addAction(tr("&Reset Metrics..."), this, 
-    //                       SLOT(importRideToDB()), tr("Ctrl+R")); 
-    //optionsMenu->addAction(tr("&Update Metrics..."), this, 
-    //                       SLOT(scanForMissing()()), tr("Ctrl+U")); 
+    optionsMenu->addAction(tr("&Options..."), this, SLOT(showOptions()));
+    optionsMenu->addAction(tr("CP and W' Estimator..."), this, SLOT(showTools()));
+    optionsMenu->addAction(tr("Air Density (Rho) Estimator..."), this, SLOT(showRhoEstimator()));
 
-    // get the available processors
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(tr("Get &Withings Data..."), this,
+                        SLOT (downloadMeasures()));
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(tr("Create a new workout..."), this, SLOT(showWorkoutWizard()));
+    optionsMenu->addAction(tr("Download workouts from ErgDB..."), this, SLOT(downloadErgDB()));
+    optionsMenu->addAction(tr("Import workouts or videos..."), this, SLOT(importWorkout()));
+    optionsMenu->addAction(tr("Scan disk for videos and workouts..."), this, SLOT(manageLibrary()));
+
+#ifdef GC_HAVE_ICAL
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(tr("Upload Activity to Calendar"), this, SLOT(uploadCalendar()), tr (""));
+    //optionsMenu->addAction(tr("Import Calendar..."), this, SLOT(importCalendar()), tr ("")); // planned for v3.1
+    //optionsMenu->addAction(tr("Export Calendar..."), this, SLOT(exportCalendar()), tr ("")); // planned for v3.1
+    optionsMenu->addAction(tr("Refresh Calendar"), this, SLOT(refreshCalendar()), tr (""));
+#endif
+    optionsMenu->addAction(tr("Create Heat Map..."), this, SLOT(generateHeatMap()), tr(""));
+    optionsMenu->addAction(tr("Export Metrics as CSV..."), this, SLOT(exportMetrics()), tr(""));
+    optionsMenu->addSeparator();
+    optionsMenu->addAction(tr("Find intervals..."), this, SLOT(addIntervals()), tr (""));
+
+    HelpWhatsThis *optionsMenuHelp = new HelpWhatsThis(optionsMenu);
+    optionsMenu->setWhatsThis(optionsMenuHelp->getWhatsThisText(HelpWhatsThis::MenuBar_Tools));
+
+
+    QMenu *editMenu = menuBar()->addMenu(tr("&Edit"));
+    // Add all the data processors to the tools menu
     const DataProcessorFactory &factory = DataProcessorFactory::instance();
     QMap<QString, DataProcessor*> processors = factory.getProcessors();
 
     if (processors.count()) {
 
-        optionsMenu->addSeparator();
         toolMapper = new QSignalMapper(this); // maps each option
         QMapIterator<QString, DataProcessor*> i(processors);
         connect(toolMapper, SIGNAL(mapped(const QString &)), this, SLOT(manualProcess(const QString &)));
@@ -430,85 +655,545 @@ MainWindow::MainWindow(const QDir &home) :
         i.toFront();
         while (i.hasNext()) {
             i.next();
-            QAction *action = new QAction(QString("%1...").arg(i.key()), this);
-            optionsMenu->addAction(action);
+            // The localized processor name is shown in menu
+            QAction *action = new QAction(QString("%1...").arg(i.value()->name()), this);
+            editMenu->addAction(action);
             connect(action, SIGNAL(triggered()), toolMapper, SLOT(map()));
             toolMapper->setMapping(action, i.key());
         }
     }
 
+    HelpWhatsThis *editMenuHelp = new HelpWhatsThis(editMenu);
+    editMenu->setWhatsThis(editMenuHelp->getWhatsThisText(HelpWhatsThis::MenuBar_Edit));
 
-
+    // VIEW MENU
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
-    QStringList tabsToHide = settings->value(GC_TABS_TO_HIDE, "").toString().split(",");
-    for (int i = 0; i < tabs.size(); ++i) {
-        TabInfo &tab = tabs[i]; // QListIterator only returns const references.
-        bool hide = tabsToHide.contains(tab.name);
-        if (!hide)
-            tabWidget->addTab(tab.contents, tab.name);
-        if (tab.contents == summarySplitter)
-            continue; // Always show the ride summary.
-        tab.action = new QAction(tab.name, this);
-        tab.action->setCheckable(true);
-        tab.action->setChecked(!hide);
-        connect(tab.action, SIGNAL(triggered(bool)), this, SLOT(tabViewTriggered(bool)));
-        viewMenu->addAction(tab.action);
-    }
- 
+#ifndef Q_OS_MAC
+    viewMenu->addAction(tr("Toggle Full Screen"), this, SLOT(toggleFullScreen()), QKeySequence("F11"));
+#endif
+    showhideSidebar = viewMenu->addAction(tr("Show Left Sidebar"), this, SLOT(showSidebar(bool)));
+    showhideSidebar->setCheckable(true);
+    showhideSidebar->setChecked(true);
+    showhideLowbar = viewMenu->addAction(tr("Show Compare Pane"), this, SLOT(showLowbar(bool)));
+    showhideLowbar->setCheckable(true);
+    showhideLowbar->setChecked(false);
+#if (!defined Q_OS_MAC) || (QT_VERSION >= 0x50201) // not on a Mac
+    showhideToolbar = viewMenu->addAction(tr("Show Toolbar"), this, SLOT(showToolbar(bool)));
+    showhideToolbar->setCheckable(true);
+    showhideToolbar->setChecked(true);
+#endif
+    showhideTabbar = viewMenu->addAction(tr("Show Athlete Tabs"), this, SLOT(showTabbar(bool)));
+    showhideTabbar->setCheckable(true);
+    showhideTabbar->setChecked(true);
+
+    //connect(showhideSidebar, SIGNAL(triggered(bool)), this, SLOT(showSidebar(bool)));
+    viewMenu->addSeparator();
+    viewMenu->addAction(tr("Activities"), this, SLOT(selectAnalysis()));
+    viewMenu->addAction(tr("Trends"), this, SLOT(selectHome()));
+#ifdef GC_HAVE_INTERVALS
+    viewMenu->addAction(tr("Intervals"), this, SLOT(selectInterval()));
+#endif
+    viewMenu->addAction(tr("Train"), this, SLOT(selectTrain()));
+#ifdef GC_HAVE_ICAL
+    viewMenu->addAction(tr("Diary"), this, SLOT(selectDiary()));
+#endif
+    viewMenu->addSeparator();
+    subChartMenu = viewMenu->addMenu(tr("Add Chart"));
+    viewMenu->addAction(tr("Reset Layout"), this, SLOT(resetWindowLayout()));
+    styleAction = viewMenu->addAction(tr("Tabbed not Tiled"), this, SLOT(toggleStyle()));
+    styleAction->setCheckable(true);
+    styleAction->setChecked(true);
+
+
+    connect(subChartMenu, SIGNAL(aboutToShow()), this, SLOT(setSubChartMenu()));
+    connect(subChartMenu, SIGNAL(triggered(QAction*)), this, SLOT(addChart(QAction*)));
+
+    HelpWhatsThis *viewMenuHelp = new HelpWhatsThis(viewMenu);
+    viewMenu->setWhatsThis(viewMenuHelp->getWhatsThisText(HelpWhatsThis::MenuBar_View));
+
+    // HELP MENU
     QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    helpMenu->addAction(tr("&Help Overview"), this, SLOT(helpWindow()));
+    helpMenu->addSeparator();
+    helpMenu->addAction(tr("&User Guide"), this, SLOT(helpView()));
+    helpMenu->addAction(tr("&Log a bug or feature request"), this, SLOT(logBug()));
+    helpMenu->addAction(tr("&Discussion and Support Forum"), this, SLOT(support()));
+    helpMenu->addSeparator();
     helpMenu->addAction(tr("&About GoldenCheetah"), this, SLOT(aboutDialog()));
 
+    HelpWhatsThis *helpMenuHelp = new HelpWhatsThis(helpMenu);
+    helpMenu->setWhatsThis(helpMenuHelp->getWhatsThisText(HelpWhatsThis::MenuBar_Help));
 
-       
-    QVariant isAscending = settings->value(GC_ALLRIDES_ASCENDING,Qt::Checked);
-    if(isAscending.toInt()>0){
-            if (last != NULL)
-                treeWidget->setCurrentItem(last);
-    } else {
-        // selects the first ride in the list:
-        if (allRides->child(0) != NULL){
-            treeWidget->scrollToItem(allRides->child(0), QAbstractItemView::EnsureVisible);
-            treeWidget->setCurrentItem(allRides->child(0));
+    /*----------------------------------------------------------------------
+     * Lets go, choose latest ride and get GUI up and running
+     *--------------------------------------------------------------------*/
+
+    showTabbar(appsettings->value(NULL, GC_TABBAR, "0").toBool());
+
+    //XXX!!! We really do need a mechanism for showing if a ride needs saving...
+    //connect(this, SIGNAL(rideDirty()), this, SLOT(enableSaveButton()));
+    //connect(this, SIGNAL(rideClean()), this, SLOT(enableSaveButton()));
+
+    saveGCState(currentTab->context); // set to whatever we started with
+    selectAnalysis();
+
+    //grab focus
+    currentTab->setFocus();
+
+    installEventFilter(this);
+
+    // catch config changes
+    connect(context, SIGNAL(configChanged(qint32)), this, SLOT(configChanged(qint32)));
+    configChanged(CONFIG_APPEARANCE);
+
+    init = true;
+}
+
+
+/*----------------------------------------------------------------------
+ * GUI
+ *--------------------------------------------------------------------*/
+
+void
+MainWindow::toggleSidebar()
+{
+    currentTab->toggleSidebar();
+    setToolButtons();
+}
+
+void
+MainWindow::showSidebar(bool want)
+{
+    currentTab->setSidebarEnabled(want);
+    showhideSidebar->setChecked(want);
+    setToolButtons();
+}
+
+void
+MainWindow::toggleLowbar()
+{
+    if (currentTab->hasBottom()) currentTab->setShowBottom(!currentTab->isShowBottom());
+    setToolButtons();
+}
+
+void
+MainWindow::showLowbar(bool want)
+{
+    if (currentTab->hasBottom()) currentTab->setShowBottom(want);
+    showhideLowbar->setChecked(want);
+    setToolButtons();
+}
+
+void
+MainWindow::showTabbar(bool want)
+{
+    setUpdatesEnabled(false);
+    showhideTabbar->setChecked(want);
+    if (want) {
+#ifdef Q_OS_MAC
+    setDocumentMode(true);
+    tabbar->setDocumentMode(true);
+#if QT_VERSION >= 0x50201
+    if (!GCColor::isFlat()) blackline->hide();
+#endif
+#endif
+        tabbar->show();
+    }
+    else {
+#ifdef Q_OS_MAC
+    setDocumentMode(false);
+    tabbar->setDocumentMode(false);
+#if QT_VERSION >= 0x50201
+    if (!GCColor::isFlat()) blackline->show();
+#endif
+#endif
+        tabbar->hide();
+    }
+    setUpdatesEnabled(true);
+}
+
+void
+MainWindow::showToolbar(bool want)
+{
+#if (!defined Q_OS_MAC) || (QT_VERSION >= 0x50201)
+    setUpdatesEnabled(false);
+    showhideToolbar->setChecked(want);
+    if (want) {
+        head->show();
+    }
+    else {
+        head->hide();
+    }
+    setUpdatesEnabled(true);
+#endif
+}
+
+void
+MainWindow::setChartMenu()
+{
+    unsigned int mask=0;
+
+    // called when chart menu about to be shown
+    // setup to only show charts that are relevant
+    // to this view
+    switch(currentTab->currentView()) {
+        case 0 : mask = VIEW_HOME; break;
+        default:
+        case 1 : mask = VIEW_ANALYSIS; break;
+        case 2 : mask = VIEW_DIARY; break;
+        case 3 : mask = VIEW_TRAIN; break;
+        case 4 : mask = VIEW_INTERVAL; break;
+    }
+
+    chartMenu->clear();
+    if (!mask) return;
+
+    for(int i=0; GcWindows[i].relevance; i++) {
+        if (GcWindows[i].relevance & mask)
+            chartMenu->addAction(GcWindows[i].name);
+    }
+}
+
+void
+MainWindow::setSubChartMenu()
+{
+    setChartMenu(subChartMenu);
+}
+
+void
+MainWindow::setChartMenu(QMenu *menu)
+{
+    unsigned int mask=0;
+    // called when chart menu about to be shown
+    // setup to only show charts that are relevant
+    // to this view
+    switch(currentTab->currentView()) {
+        case 0 : mask = VIEW_HOME; break;
+        default:
+        case 1 : mask = VIEW_ANALYSIS; break;
+        case 2 : mask = VIEW_DIARY; break;
+        case 3 : mask = VIEW_TRAIN; break;
+        case 4 : mask = VIEW_INTERVAL; break;
+    }
+
+    menu->clear();
+    if (!mask) return;
+
+    for(int i=0; GcWindows[i].relevance; i++) {
+        if (GcWindows[i].relevance & mask)
+            menu->addAction(GcWindows[i].name);
+    }
+}
+
+void
+MainWindow::addChart(QAction*action)
+{
+    GcWinID id = GcWindowTypes::None;
+    for (int i=0; GcWindows[i].relevance; i++) {
+        if (GcWindows[i].name == action->text()) {
+            id = GcWindows[i].id;
+            break;
         }
     }
-
-    setAttribute(Qt::WA_DeleteOnClose);
+    if (id != GcWindowTypes::None)
+        currentTab->addChart(id); // called from MainWindow to inset chart
 }
 
 void
-MainWindow::tabViewTriggered(bool)
+MainWindow::setStyleFromSegment(int segment)
 {
-    disconnect(tabWidget, SIGNAL(currentChanged(int)), this, SLOT(tabChanged(int)));
-    QWidget *currentWidget = tabWidget->currentWidget();
-    int currentIndex = tabWidget->currentIndex();
-    tabWidget->clear();
-    QStringList tabsToHide;
-    foreach (const TabInfo &tab, tabs) {
-        if (!tab.action || tab.action->isChecked())
-            tabWidget->addTab(tab.contents, tab.name);
-        else
-            tabsToHide << tab.name;
+    currentTab->setTiled(segment);
+    styleAction->setChecked(!segment);
+}
+
+void
+MainWindow::toggleStyle()
+{
+    currentTab->toggleTile();
+    styleAction->setChecked(currentTab->isTiled());
+    setToolButtons();
+}
+
+#ifndef Q_OS_MAC
+void
+MainWindow::toggleFullScreen()
+{
+    if (fullScreen) fullScreen->toggle();
+    else qDebug()<<"no fullscreen support compiled in.";
+}
+#endif
+
+bool
+MainWindow::eventFilter(QObject *o, QEvent *e)
+{
+    if (o == this) {
+        if (e->type() == QEvent::WindowStateChange) resizeEvent(NULL); // see below
     }
-    if (tabWidget->indexOf(currentWidget) >= 0)
-        tabWidget->setCurrentWidget(currentWidget);
-    else if (currentIndex < tabWidget->count())
-        tabWidget->setCurrentIndex(currentIndex);
-    tabChanged(tabWidget->currentIndex());
-    connect(tabWidget, SIGNAL(currentChanged(int)), this, SLOT(tabChanged(int)));
-    settings->setValue(GC_TABS_TO_HIDE, tabsToHide.join(","));
+    return false;
 }
 
 void
-MainWindow::selectView(int view)
+MainWindow::resizeEvent(QResizeEvent*)
 {
-    if (view == VIEW_ANALYSIS)
-        views->setCurrentIndex(0); // set stacked widget to Analysis
-    else if (view == VIEW_TRAIN)
-        views->setCurrentIndex(1); // set stacked widget to Train
-
-    // notify with a signal
-    viewChanged(view);
+#ifdef Q_OS_MAC
+    if (head) {
+        head->updateGeometry();
+        repaint();
+    }
+#endif
+    appsettings->setValue(GC_SETTINGS_MAIN_GEOM, saveGeometry());
+    appsettings->setValue(GC_SETTINGS_MAIN_STATE, saveState());
 }
+
+void
+MainWindow::showOptions()
+{
+    ConfigDialog *cd = new ConfigDialog(currentTab->context->athlete->home->root(), currentTab->context->athlete->zones_, currentTab->context);
+
+    // move to the centre of the screen
+    cd->move(geometry().center()-QPoint(cd->geometry().width()/2, cd->geometry().height()/2));
+    cd->show();
+}
+
+void
+MainWindow::moveEvent(QMoveEvent*)
+{
+    appsettings->setValue(GC_SETTINGS_MAIN_GEOM, saveGeometry());
+}
+
+void
+MainWindow::closeEvent(QCloseEvent* event)
+{
+    QList<Tab*> closing = tabList;
+    bool needtosave = false;
+
+    // close all the tabs .. if any refuse we need to ignore
+    //                       the close event
+    foreach(Tab *tab, closing) {
+
+        // do we need to save?
+        if (tab->context->mainWindow->saveRideExitDialog(tab->context) == true)
+            removeTab(tab);
+        else
+            needtosave = true;
+    }
+
+    // were any left hanging around?
+    if (needtosave) event->ignore();
+    else {
+
+        // finish off the job and leave
+        // clear the clipboard if neccessary
+        QApplication::clipboard()->setText("");
+
+        // now remove from the list
+        if(mainwindows.removeOne(this) == false)
+            qDebug()<<"closeEvent: mainwindows list error";
+
+        // save global mainwindow settings
+        appsettings->setValue(GC_TABBAR, showhideTabbar->isChecked());
+#if QT_VERSION > 0x050200
+        // wait for threads.. max of 10 seconds before just exiting anyway
+        for (int i=0; i<10 && QThreadPool::globalInstance()->activeThreadCount(); i++) {
+            QThread::sleep(1);
+        }
+#endif
+    }
+    appsettings->setValue(GC_SETTINGS_MAIN_GEOM, saveGeometry());
+    appsettings->setValue(GC_SETTINGS_MAIN_STATE, saveState());
+}
+
+MainWindow::~MainWindow()
+{
+    // aside from the tabs, we may need to clean
+    // up any dangling widgets created in MainWindow::MainWindow (?)
+}
+
+// global search/data filter
+void MainWindow::setFilter(QStringList f) { currentTab->context->setFilter(f); }
+void MainWindow::clearFilter() { currentTab->context->clearFilter(); }
+
+void
+MainWindow::closeAll()
+{
+    QList<MainWindow *> windows = mainwindows; // get a copy, since it is updated as closed
+
+    foreach(MainWindow *window, windows)
+        if (window != this)
+            window->closeWindow();
+
+    // now close us down!
+    closeWindow();
+}
+
+void
+MainWindow::aboutDialog()
+{
+    AboutDialog *ad = new AboutDialog(currentTab->context);
+    ad->exec();
+}
+
+void MainWindow::showTools()
+{
+   ToolsDialog *td = new ToolsDialog();
+   td->show();
+}
+
+void MainWindow::showRhoEstimator()
+{
+   ToolsRhoEstimator *tre = new ToolsRhoEstimator(currentTab->context);
+   tre->show();
+}
+
+void MainWindow::showWorkoutWizard()
+{
+   WorkoutWizard *ww = new WorkoutWizard(currentTab->context);
+   ww->show();
+}
+
+void MainWindow::resetWindowLayout()
+{
+    QMessageBox msgBox;
+    msgBox.setText(tr("You are about to reset all charts to the default setup"));
+    msgBox.setInformativeText(tr("Do you want to continue?"));
+    msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Cancel);
+    msgBox.setIcon(QMessageBox::Warning);
+    msgBox.exec();
+
+    if(msgBox.clickedButton() == msgBox.button(QMessageBox::Ok))
+        currentTab->resetLayout();
+}
+
+void MainWindow::manualProcess(QString name)
+{
+    // open a dialog box and let the users
+    // configure the options to use
+    // and also show the explanation
+    // of what this function does
+    // then call it!
+    RideItem *rideitem = (RideItem*)currentTab->context->currentRideItem();
+    if (rideitem) {
+        ManualDataProcessorDialog *p = new ManualDataProcessorDialog(currentTab->context, name, rideitem);
+        p->setWindowModality(Qt::ApplicationModal); // don't allow select other ride or it all goes wrong!
+        p->exec();
+    }
+}
+
+
+void
+MainWindow::helpWindow()
+{
+    HelpWindow* help = new HelpWindow(currentTab->context);
+    help->show();
+}
+
+
+void
+MainWindow::logBug()
+{
+    QDesktopServices::openUrl(QUrl("https://github.com/GoldenCheetah/GoldenCheetah/issues"));
+}
+
+void
+MainWindow::helpView()
+{
+    QDesktopServices::openUrl(QUrl("https://github.com/GoldenCheetah/GoldenCheetah/wiki"));
+}
+
+
+void
+MainWindow::support()
+{
+    QDesktopServices::openUrl(QUrl("https://groups.google.com/forum/#!forum/golden-cheetah-users"));
+}
+
+void
+MainWindow::selectAnalysis()
+{
+    currentTab->selectView(1);
+    setToolButtons();
+}
+
+void
+MainWindow::selectTrain()
+{
+    currentTab->selectView(3);
+    setToolButtons();
+}
+
+void
+MainWindow::selectDiary()
+{
+    currentTab->selectView(2);
+    setToolButtons();
+}
+
+void
+MainWindow::selectHome()
+{
+    currentTab->selectView(0);
+    setToolButtons();
+}
+
+void
+MainWindow::selectInterval()
+{
+    currentTab->selectView(4);
+    setToolButtons();
+}
+
+void
+MainWindow::setToolButtons()
+{
+    int select = currentTab->isTiled() ? 1 : 0;
+    int lowselected = currentTab->isShowBottom() ? 1 : 0;
+
+    styleAction->setChecked(select);
+    showhideLowbar->setChecked(lowselected);
+
+#ifdef Q_OS_MAC
+    styleSelector->setSelected(select, true);
+    lowbar->setSelected(lowselected);
+#else
+    if (styleSelector->isSegmentSelected(select) == false)
+        styleSelector->setSegmentSelected(select, true);
+#endif
+
+    int index = currentTab->currentView();
+
+    //XXX WTAF! The index used is fucked up XXX
+    //          hack around this and then come back
+    //          and look at this as a separate fixup
+#ifdef GC_HAVE_ICAL
+    switch (index) {
+    case 0: // home no change
+    case 3: // train no change
+    default:
+        break;
+    case 1:
+        index = 2; // analysis
+        break;
+    case 2:
+        index = 1; // diary
+        break;
+    }
+#else
+    switch (index) {
+    case 0: // home no change
+    case 1:
+    default:
+        break;
+    case 3:
+        index = 2; // train
+    }
+#endif
+    scopebar->setSelected(index);
+}
+
+/*----------------------------------------------------------------------
+ * Drag and Drop
+ *--------------------------------------------------------------------*/
 
 void
 MainWindow::dragEnterEvent(QDragEnterEvent *event)
@@ -520,8 +1205,10 @@ MainWindow::dragEnterEvent(QDragEnterEvent *event)
         if (url.toString().startsWith("http"))
             accept = false;
 
-    if (accept) event->acceptProposedAction(); // whatever you wanna drop we will try and process!
-    else event->ignore();
+    if (accept) {
+        event->acceptProposedAction(); // whatever you wanna drop we will try and process!
+        raise();
+    } else event->ignore();
 }
 
 void
@@ -530,900 +1217,186 @@ MainWindow::dropEvent(QDropEvent *event)
     QList<QUrl> urls = event->mimeData()->urls();
     if (urls.isEmpty()) return;
 
-    // We have something to process then
-    RideImportWizard *dialog = new RideImportWizard (&urls, home, this);
-    dialog->process(); // do it!
+    if (currentTab->currentView() != 3) { // we're not on train view
+        // We have something to process then
+        RideImportWizard *dialog = new RideImportWizard (&urls, currentTab->context);
+        dialog->process(); // do it!
+    } else {
+        QStringList filenames;
+        for (int i=0; i<urls.count(); i++)
+            filenames.append(QFileInfo(urls.value(i).toLocalFile()).absoluteFilePath());
+        Library::importFiles(currentTab->context, filenames);
+    }
     return;
 }
 
-void
-MainWindow::addRide(QString name, bool bSelect /*=true*/)
-{
-    QString notesFileName;
-    QDateTime dt;
-    if (!parseRideFileName(name, &notesFileName, &dt)) {
-        fprintf(stderr, "bad name: %s\n", name.toAscii().constData());
-        assert(false);
-    }
-    RideItem *last = new RideItem(RIDE_TYPE, home.path(), 
-                                  name, dt, zones(), hrZones(), notesFileName, this);
+/*----------------------------------------------------------------------
+ * Ride Library Functions
+ *--------------------------------------------------------------------*/
 
-    QVariant isAscending = settings->value(GC_ALLRIDES_ASCENDING,Qt::Checked); // default is ascending sort
-    int index = 0;
-    while (index < allRides->childCount()) {
-        QTreeWidgetItem *item = allRides->child(index);
-        if (item->type() != RIDE_TYPE)
-            continue;
-        RideItem *other = static_cast<RideItem*>(item);
-        
-        if(isAscending.toInt() > 0 ){
-            if (other->dateTime > dt)
-                break;
-        } else {
-            if (other->dateTime < dt)
-                break; 
-        }
-        if (other->fileName == name) {
-            delete allRides->takeChild(index);
-            break;
-        }
-        ++index;
-    }
-    allRides->insertChild(index, last);
-    calendar->update();
-    criticalPowerWindow->newRideAdded();
-    if (bSelect)
-    {
-        tabWidget->setCurrentWidget(summarySplitter);
-        treeWidget->setCurrentItem(last);
-    }
-    rideAdded(last);
-}
-
-void
-MainWindow::removeCurrentRide()
-{
-    int x = 0;
-
-    QTreeWidgetItem *_item = treeWidget->currentItem();
-    if (_item->type() != RIDE_TYPE)
-        return;
-    RideItem *item = static_cast<RideItem*>(_item);
-
-    rideDeleted(item);
-
-    QTreeWidgetItem *itemToSelect = NULL;
-    for (x=0; x<allRides->childCount(); ++x)
-    {
-        if (item==allRides->child(x))
-        {
-            break;
-        }
-    }
-
-    if (x>0) {
-        itemToSelect = allRides->child(x-1);
-    }
-    if ((x+1)<allRides->childCount()) {
-        itemToSelect = allRides->child(x+1);
-    }
-
-    QString strOldFileName = item->fileName;
-    allRides->removeChild(item);
-    delete item;
-
-    QFile file(home.absolutePath() + "/" + strOldFileName);
-    // purposefully don't remove the old ext so the user wouldn't have to figure out what the old file type was
-    QString strNewName = strOldFileName + ".bak";
-
-    // in case there was an existing bak file, delete it
-    // ignore errors since it probably isn't there.
-    QFile::remove(home.absolutePath() + "/" + strNewName);
-
-    if (!file.rename(home.absolutePath() + "/" + strNewName))
-    {
-        QMessageBox::critical(
-            this, "Rename Error",
-            tr("Can't rename %1 to %2")
-            .arg(strOldFileName).arg(strNewName));
-    }
-
-    // added djconnel: remove old cpi file, then update bests which are associated with the file
-    criticalPowerWindow->deleteCpiFile(strOldFileName);
-
-    treeWidget->setCurrentItem(itemToSelect);
-    rideTreeWidgetSelectionChanged();
-    calendar->update();
-}
-
-void
-MainWindow::newCyclist()
-{
-    QDir newHome = home;
-    newHome.cdUp();
-    QString name = ChooseCyclistDialog::newCyclistDialog(newHome, this);
-    if (!name.isEmpty()) {
-        newHome.cd(name);
-        if (!newHome.exists())
-            assert(false);
-        MainWindow *main = new MainWindow(newHome);
-        main->show();
-    }
-}
-
-void
-MainWindow::openCyclist()
-{
-    QDir newHome = home;
-    newHome.cdUp();
-    ChooseCyclistDialog d(newHome, false);
-    d.setModal(true);
-    if (d.exec() == QDialog::Accepted) {
-        newHome.cd(d.choice());
-        if (!newHome.exists())
-            assert(false);
-        MainWindow *main = new MainWindow(newHome);
-        main->show();
-    }
-}
 
 void
 MainWindow::downloadRide()
 {
-    (new DownloadRideDialog(this, home))->show();
+    (new DownloadRideDialog(currentTab->context))->show();
 }
 
 
 void
 MainWindow::manualRide()
 {
-    (new ManualRideDialog(this, home, useMetricUnits))->show();
-}
-
-const RideFile *
-MainWindow::currentRide()
-{
-    if ((treeWidget->selectedItems().size() != 1)
-        || (treeWidget->selectedItems().first()->type() != RIDE_TYPE)) {
-        return NULL;
-    }
-    return ((RideItem*) treeWidget->selectedItems().first())->ride();
+    (new ManualRideDialog(currentTab->context))->show();
 }
 
 void
-MainWindow::exportPWX()
+MainWindow::exportBatch()
 {
-    if ((treeWidget->selectedItems().size() != 1)
-        || (treeWidget->selectedItems().first()->type() != RIDE_TYPE)) {
-        QMessageBox::critical(this, tr("Select Ride"), tr("No ride selected!"));
-        return;
-    }
-
-    QString fileName = QFileDialog::getSaveFileName(
-        this, tr("Export PWX"), QDir::homePath(), tr("PWX (*.pwx)"));
-    if (fileName.length() == 0)
-        return;
-
-    QString err;
-    QFile file(fileName);
-    PwxFileReader reader;
-    reader.writeRideFile(home.dirName() /* cyclist name */, currentRide(), file);
+    BatchExportDialog *d = new BatchExportDialog(currentTab->context);
+    d->exec();
 }
 
 void
-MainWindow::exportGC()
+MainWindow::generateHeatMap()
 {
-    if ((treeWidget->selectedItems().size() != 1)
-        || (treeWidget->selectedItems().first()->type() != RIDE_TYPE)) {
-        QMessageBox::critical(this, tr("Select Ride"), tr("No ride selected!"));
-        return;
-    }
-
-    QString fileName = QFileDialog::getSaveFileName(
-        this, tr("Export GC"), QDir::homePath(), tr("GC (*.gc)"));
-    if (fileName.length() == 0)
-        return;
-
-    QString err;
-    QFile file(fileName);
-    GcFileReader reader;
-    reader.writeRideFile(currentRide(), file);
+    GenerateHeatMapDialog *d = new GenerateHeatMapDialog(currentTab->context);
+    d->exec();
 }
 
-#ifdef GC_HAVE_KML
 void
-MainWindow::exportKML()
+MainWindow::exportRide()
 {
-    if ((treeWidget->selectedItems().size() != 1)
-        || (treeWidget->selectedItems().first()->type() != RIDE_TYPE)) {
-        QMessageBox::critical(this, tr("Select Ride"), tr("No ride selected!"));
+    if (currentTab->context->ride == NULL) {
+        QMessageBox::critical(this, tr("Select Activity"), tr("No activity selected!"));
         return;
     }
 
-    QString fileName = QFileDialog::getSaveFileName(
-        this, tr("Export KML"), QDir::homePath(), tr("Google Earth KML (*.kml)"));
-    if (fileName.length() == 0)
-        return;
+    // what format?
+    const RideFileFactory &rff = RideFileFactory::instance();
+    QStringList allFormats;
+    foreach(QString suffix, rff.writeSuffixes())
+        allFormats << QString("%1 (*.%2)").arg(rff.description(suffix)).arg(suffix);
 
-    QString err;
-    QFile file(fileName);
-    KmlFileReader reader;
-    reader.writeRideFile(currentRide(), file);
-}
-#endif
+    QString suffix; // what was selected?
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Export Activity"), QDir::homePath(), allFormats.join(";;"), &suffix);
 
-void
-MainWindow::exportCSV()
-{
-    if ((treeWidget->selectedItems().size() != 1)
-        || (treeWidget->selectedItems().first()->type() != RIDE_TYPE)) {
-        QMessageBox::critical(this, tr("Select Ride"), tr("No ride selected!"));
-        return;
-    }
+    if (fileName.length() == 0) return;
 
-    ride = (RideItem*) treeWidget->selectedItems().first();
-
-    // Ask the user if they prefer to export with English or metric units.
-    QStringList items;
-    items << tr("Metric") << tr("Imperial");
-    bool ok;
-    QString units = QInputDialog::getItem(
-        this, tr("Select Units"), tr("Units:"), items, 0, false, &ok);
-    if(!ok) 
-        return;
-    bool useMetricUnits = (units == items[0]);
-
-    QString fileName = QFileDialog::getSaveFileName(
-        this, tr("Export CSV"), QDir::homePath(),
-        tr("Comma-Separated Values (*.csv)"));
-    if (fileName.length() == 0)
-        return;
+    // which file type was selected
+    // extract from the suffix returned
+    QRegExp getSuffix("^[^(]*\\(\\*\\.([^)]*)\\)$");
+    getSuffix.exactMatch(suffix);
 
     QFile file(fileName);
-    if (!file.open(QFile::WriteOnly | QFile::Truncate))
-    {
-        QMessageBox::critical(this, tr("Split Ride"), tr("The file %1 can't be opened for writing").arg(fileName));
-        return;
-    }
+    RideFile *currentRide = currentTab->context->ride ? currentTab->context->ride->ride() : NULL;
+    bool result = RideFileFactory::instance().writeRideFile(currentTab->context, currentRide, file, getSuffix.cap(1));
 
-    ride->ride()->writeAsCsv(file, useMetricUnits);
+    if (result == false) {
+        QMessageBox oops(QMessageBox::Critical, tr("Export Failed"),
+                         tr("Failed to export activity, please check permissions"));
+        oops.exec();
+    }
 }
 
 void
 MainWindow::importFile()
 {
-    QVariant lastDirVar = settings->value(GC_SETTINGS_LAST_IMPORT_PATH);
-    QString lastDir = (lastDirVar != QVariant()) 
+    QVariant lastDirVar = appsettings->value(this, GC_SETTINGS_LAST_IMPORT_PATH);
+    QString lastDir = (lastDirVar != QVariant())
         ? lastDirVar.toString() : QDir::homePath();
-   
+
     const RideFileFactory &rff = RideFileFactory::instance();
     QStringList suffixList = rff.suffixes();
     suffixList.replaceInStrings(QRegExp("^"), "*.");
-    QStringList fileNames; 
+    QStringList fileNames;
     QStringList allFormats;
     allFormats << QString("All Supported Formats (%1)").arg(suffixList.join(" "));
     foreach(QString suffix, rff.suffixes())
         allFormats << QString("%1 (*.%2)").arg(rff.description(suffix)).arg(suffix);
     allFormats << "All files (*.*)";
-    fileNames = QFileDialog::getOpenFileNames(
-        this, tr("Import from File"), lastDir,
-        allFormats.join(";;"));
+    fileNames = QFileDialog::getOpenFileNames( this, tr("Import from File"), lastDir, allFormats.join(";;"));
     if (!fileNames.isEmpty()) {
         lastDir = QFileInfo(fileNames.front()).absolutePath();
-        settings->setValue(GC_SETTINGS_LAST_IMPORT_PATH, lastDir);
+        appsettings->setValue(GC_SETTINGS_LAST_IMPORT_PATH, lastDir);
         QStringList fileNamesCopy = fileNames; // QT doc says iterate over a copy
-        RideImportWizard *import = new RideImportWizard(fileNamesCopy, home, this);
+        RideImportWizard *import = new RideImportWizard(fileNamesCopy, currentTab->context);
         import->process();
     }
 }
 
 void
-MainWindow::findBestIntervals()
-{
-    BestIntervalDialog *p = new BestIntervalDialog(this);
-    p->setWindowModality(Qt::ApplicationModal); // don't allow select other ride or it all goes wrong!
-    p->exec();
-}
-
-void
-MainWindow::addIntervalForPowerPeaksForSecs(RideFile *ride, int windowSizeSecs, QString name)
-{
-    QList<BestIntervalDialog::BestInterval> results;
-    BestIntervalDialog::findBests(ride, windowSizeSecs, 1, results);
-    if (results.isEmpty()) return;
-    const BestIntervalDialog::BestInterval &i = results.first();
-    QTreeWidgetItem *peak =
-        new IntervalItem(ride, name+tr(" (%1 watts)").arg((int) round(i.avg)),
-                         i.start, i.stop,
-                         ride->timeToDistance(i.start),
-                         ride->timeToDistance(i.stop),
-                         allIntervals->childCount()+1);
-    allIntervals->addChild(peak);
-}
-
-void
-MainWindow::findPowerPeaks()
-{
-    QTreeWidgetItem *which = treeWidget->selectedItems().first();
-    if (which->type() != RIDE_TYPE) {
-        return;
-    }
-
-    addIntervalForPowerPeaksForSecs(ride->ride(), 5, "Peak 5s");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 10, "Peak 10s");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 20, "Peak 20s");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 30, "Peak 30s");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 60, "Peak 1min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 120, "Peak 2min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 300, "Peak 5min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 600, "Peak 10min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 1200, "Peak 20min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 1800, "Peak 30min");
-    addIntervalForPowerPeaksForSecs(ride->ride(), 3600, "Peak 60min");
-
-    // now update the RideFileIntervals
-    updateRideFileIntervals();
-}
-
-//----------------------------------------------------------------------
-// User-define Intervals and Interval manipulation on left layout
-//----------------------------------------------------------------------
-
-void 
-MainWindow::rideTreeWidgetSelectionChanged()
-{
-    assert(treeWidget->selectedItems().size() <= 1);
-    if (treeWidget->selectedItems().isEmpty())
-        ride = NULL;
-    else {
-        QTreeWidgetItem *which = treeWidget->selectedItems().first();
-        if (which->type() != RIDE_TYPE)
-            ride = NULL;
-        else
-            ride = (RideItem*) which;
-    }
-    rideSelected();
-
-    if (!ride)
-        return;
-
-    calendar->setSelectedDate(ride->dateTime.date());
-
-    // refresh interval list for bottom left
-    // first lets wipe away the existing intervals
-    QList<QTreeWidgetItem *> intervals = allIntervals->takeChildren();
-    for (int i=0; i<intervals.count(); i++) delete intervals.at(i);
-
-    // now add the intervals for the current ride
-    if (ride) { // only if we have a ride pointer
-        RideFile *selected = ride->ride();
-        if (selected) {
-            // get all the intervals in the currently selected RideFile
-            QList<RideFileInterval> intervals = selected->intervals();
-            for (int i=0; i < intervals.count(); i++) {
-                // add as a child to allIntervals
-                IntervalItem *add = new IntervalItem(selected,
-                                                        intervals.at(i).name,
-                                                        intervals.at(i).start,
-                                                        intervals.at(i).stop,
-                                                        selected->timeToDistance(intervals.at(i).start),
-                                                        selected->timeToDistance(intervals.at(i).stop),
-                                                        allIntervals->childCount()+1);
-                allIntervals->addChild(add);
-            }
-        }
-    }
-
-	// turn off tabs that don't make sense for manual file entry
-    int histIndex = tabWidget->indexOf(histogramWindow);
-    int pfpvIndex = tabWidget->indexOf(pfPvWindow);
-    int plotIndex = tabWidget->indexOf(allPlotWindow);
-    int modelIndex = tabWidget->indexOf(modelWindow);
-    int mapIndex   = tabWidget->indexOf(googleMap);
-    int editorIndex   = tabWidget->indexOf(rideEdit);
-
-    bool enabled = (ride->ride() && ride->ride()->deviceType() != QString("Manual CSV") &&
-                     !ride->ride()->dataPoints().isEmpty());
-
-    if (histIndex >= 0) tabWidget->setTabEnabled(histIndex, enabled);
-    if (pfpvIndex >= 0) tabWidget->setTabEnabled(pfpvIndex, enabled);
-    if (plotIndex >= 0) tabWidget->setTabEnabled(plotIndex, enabled);
-    if (modelIndex >= 0) tabWidget->setTabEnabled(modelIndex, enabled);
-    if (mapIndex >= 0) tabWidget->setTabEnabled(mapIndex, enabled);
-    if (editorIndex >= 0) tabWidget->setTabEnabled(editorIndex, enabled);
-    saveAndOpenNotes();
-}
-void
-MainWindow::showTreeContextMenuPopup(const QPoint &pos)
-{
-    QTreeWidgetItem *trItem = treeWidget->itemAt( pos );
-    if (trItem != NULL && trItem->text(0) != tr("All Rides")) {
-        QMenu menu(treeWidget);
-
-        RideItem *rideItem = (RideItem *)treeWidget->selectedItems().first();
-
-        activeRide = (RideItem *)trItem;
-
-        QAction *actSaveRide = new QAction(tr("Save Changes to Ride"), treeWidget);
-        connect(actSaveRide, SIGNAL(triggered(void)), this, SLOT(saveRide()));
-
-        QAction *revertRide = new QAction(tr("Revert to Saved Ride"), treeWidget);
-        connect(revertRide, SIGNAL(triggered(void)), this, SLOT(revertRide()));
-
-        QAction *actDeleteRide = new QAction(tr("Delete Ride"), treeWidget);
-        connect(actDeleteRide, SIGNAL(triggered(void)), this, SLOT(deleteRide()));
-
-        QAction *actBestInt = new QAction(tr("Find Best Intervals"), treeWidget);
-        connect(actBestInt, SIGNAL(triggered(void)), this, SLOT(findBestIntervals()));
-
-        QAction *actPowerPeaks = new QAction(tr("Find Power Peaks"), treeWidget);
-        connect(actPowerPeaks, SIGNAL(triggered(void)), this, SLOT(findPowerPeaks()));
-
-        QAction *actSplitRide = new QAction(tr("Split Ride"), treeWidget);
-        connect(actSplitRide, SIGNAL(triggered(void)), this, SLOT(splitRide()));
-
-        if (rideItem->isDirty() == true) {
-          menu.addAction(actSaveRide);
-          menu.addAction(revertRide);
-        }
-
-        menu.addAction(actDeleteRide);
-	menu.addAction(actBestInt);
-	menu.addAction(actPowerPeaks);
-	menu.addAction(actSplitRide);
-
-#ifdef GC_HAVE_LIBOAUTH
-        QAction *actTweetRide = new QAction(tr("Tweet Ride"), treeWidget);
-        connect(actTweetRide, SIGNAL(triggered(void)), this, SLOT(tweetRide()));
-        menu.addAction(actTweetRide);
-#endif
-
-        menu.exec(treeWidget->mapToGlobal( pos ));
-    }
-}
-void
-MainWindow::showContextMenuPopup(const QPoint &pos)
-{
-    QTreeWidgetItem *trItem = intervalWidget->itemAt( pos );
-    if (trItem != NULL && trItem->text(0) != tr("Intervals")) {
-        QMenu menu(intervalWidget);
-
-        activeInterval = (IntervalItem *)trItem;
-
-        QAction *actRenameInt = new QAction(tr("Rename interval"), intervalWidget);
-        QAction *actDeleteInt = new QAction(tr("Delete interval"), intervalWidget);
-        QAction *actZoomInt = new QAction(tr("Zoom to interval"), intervalWidget);
-        QAction *actFrontInt = new QAction(tr("Bring to Front"), intervalWidget);
-        QAction *actBackInt = new QAction(tr("Send to back"), intervalWidget);
-        connect(actRenameInt, SIGNAL(triggered(void)), this, SLOT(renameInterval(void)));
-        connect(actDeleteInt, SIGNAL(triggered(void)), this, SLOT(deleteInterval(void)));
-        connect(actZoomInt, SIGNAL(triggered(void)), this, SLOT(zoomInterval(void)));
-        connect(actFrontInt, SIGNAL(triggered(void)), this, SLOT(frontInterval(void)));
-        connect(actBackInt, SIGNAL(triggered(void)), this, SLOT(backInterval(void)));
-
-        if (tabWidget->currentWidget() == allPlotWindow)
-            menu.addAction(actZoomInt);
-        menu.addAction(actRenameInt);
-        menu.addAction(actDeleteInt);
-        if (tabWidget->currentWidget() == pfPvWindow && activeInterval->isSelected()) {
-            menu.addAction(actFrontInt);
-            menu.addAction(actBackInt);
-        }
-        menu.exec(intervalWidget->mapToGlobal( pos ));
-    }
-}
-void
-MainWindow::updateRideFileIntervals()
-{
-    // iterate over allIntervals as they are now defined
-    // and update the RideFile->intervals
-    RideItem *which = (RideItem *)treeWidget->selectedItems().first();
-    RideFile *current = which->ride();
-    current->clearIntervals();
-    for (int i=0; i < allIntervals->childCount(); i++) {
-        // add the intervals as updated
-        IntervalItem *it = (IntervalItem *)allIntervals->child(i);
-        current->addInterval(it->start, it->stop, it->text(0));
-    }
-
-    // emit signal for interval data changed
-    intervalsChanged();
-
-    // set dirty
-    which->setDirty(true);
-}
-
-void
-MainWindow::deleteInterval()
-{
-    // renumber remaining
-    int oindex = activeInterval->displaySequence;
-    for (int i=0; i<allIntervals->childCount(); i++) {
-        IntervalItem *it = (IntervalItem *)allIntervals->child(i);
-        int ds = it->displaySequence;
-        if (ds > oindex) it->setDisplaySequence(ds-1);
-    }
-
-    // now delete!
-    int index = allIntervals->indexOfChild(activeInterval);
-    delete allIntervals->takeChild(index);
-    updateRideFileIntervals(); // will emit intervalChanged() signal
-}
-
-void
-MainWindow::renameInterval() {
-    // go edit the name
-    activeInterval->setFlags(activeInterval->flags() | Qt::ItemIsEditable);
-    intervalWidget->editItem(activeInterval, 0);
-}
-
-void
-MainWindow::intervalEdited(QTreeWidgetItem *, int) {
-    // the user renamed the interval
-    updateRideFileIntervals(); // will emit intervalChanged() signal
-}
-
-void
-MainWindow::zoomInterval() {
-    // zoom into this interval on allPlot
-    allPlotWindow->zoomInterval(activeInterval);
-}
-
-void
-MainWindow::frontInterval()
-{
-    int oindex = activeInterval->displaySequence;
-    for (int i=0; i<allIntervals->childCount(); i++) {
-        IntervalItem *it = (IntervalItem *)allIntervals->child(i);
-        int ds = it->displaySequence;
-        if (ds > oindex)
-            it->setDisplaySequence(ds-1);
-    }
-    activeInterval->setDisplaySequence(allIntervals->childCount());
-
-    // signal!
-    intervalsChanged();
-}
-
-void
-MainWindow::backInterval()
-{
-    int oindex = activeInterval->displaySequence;
-    for (int i=0; i<allIntervals->childCount(); i++) {
-        IntervalItem *it = (IntervalItem *)allIntervals->child(i);
-        int ds = it->displaySequence;
-        if (ds < oindex)
-            it->setDisplaySequence(ds+1);
-    }
-    activeInterval->setDisplaySequence(1);
-
-    // signal!
-    intervalsChanged();
-
-}
-
-void
-MainWindow::intervalTreeWidgetSelectionChanged()
-{
-    intervalSelected();
-}
-
-void MainWindow::getBSFactors(double &timeBS, double &distanceBS,
-                              double &timeDP, double &distanceDP)
-{
-    int rides;
-    double seconds, distance, bs, dp;
-    QProgressDialog * progress;
-    bool aborted = false;
-    seconds = rides = 0;
-    distance = bs = dp = 0;
-    timeBS = distanceBS = timeDP = distanceDP = 0.0;
-
-    QVariant BSdays = settings->value(GC_BIKESCOREDAYS);
-    if (BSdays.isNull() || BSdays.toInt() == 0)
-        BSdays.setValue(30); // by default look back no more than 30 days
-
-    // if there are rides, find most recent ride so we count back from there:
-    if (allRides->childCount() == 0)
-        return;
-
-    RideItem *lastRideItem = (RideItem*) allRides->child(allRides->childCount() - 1);
-
-    // set up progress bar
-    progress = new QProgressDialog(QString(tr("Computing bike score estimating factors.\n")),
-                                   tr("Abort"),0,BSdays.toInt(),this);
-    int endingOffset = progress->labelText().size();
-
-    for (int i = 0; i < allRides->childCount(); ++i) {
-        RideItem *item = (RideItem*) allRides->child(i);
-        int days =  item->dateTime.daysTo(lastRideItem->dateTime);
-        if ((item->type() == RIDE_TYPE)
-            && (days >= 0) && (days < BSdays.toInt())
-            && (item->ride())
-            && (item->ride()->deviceType() != QString("Manual CSV"))) {
-
-            RideMetricPtr m;
-            item->computeMetrics();
-
-            QString existing = progress->labelText();
-            existing.chop(progress->labelText().size() - endingOffset);
-            progress->setLabelText(
-                existing + QString(tr("Processing %1...")).arg(item->fileName));
-
-            // only count rides with BS > 0
-            if ((m = item->metrics.value("skiba_bike_score")) &&
-                m->value(true)) {
-                bs += m->value(true);
-
-                if ((m = item->metrics.value("time_riding"))) {
-                    seconds += m->value(true);
-                }
-
-                if ((m = item->metrics.value("total_distance"))) {
-                    distance += m->value(true);
-                }
-
-                if ((m = item->metrics.value("daniels_points"))) {
-                    dp += m->value(true);
-                }
-
-                rides++;
-            }
-            // check progress
-            QCoreApplication::processEvents();
-            if (progress->wasCanceled()) {
-                aborted = true;
-                goto done;
-            }
-            // set progress from 0 to BSdays
-            progress->setValue(BSdays.toInt() - days);
-        }
-    }
-    if (rides) {
-        if (!useMetricUnits)
-            distance *= MILES_PER_KM;
-        timeBS = (bs * 3600) / seconds;  // BS per hour
-        distanceBS = bs / distance;  // BS per mile or km
-        timeDP = (dp * 3600) / seconds;  // DP per hour
-        distanceDP = dp / distance;  // DP per mile or km
-    }
-done:
-    if (aborted) {
-        timeBS = distanceBS = timeDP = distanceDP = 0;
-    }
-
-    delete progress;
-}
-
-void
-MainWindow::saveAndOpenNotes()
-{
-    // First save the contents of the notes window.
-    saveNotes();
-
-    // Now open any notes associated with the new ride.
-    rideNotes->setPlainText("");
-    QString notesPath = home.absolutePath() + "/" + ride->notesFileName;
-    QFile notesFile(notesPath);
-
-    if (notesFile.exists()) {
-        if (notesFile.open(QFile::ReadOnly | QFile::Text)) {
-            QTextStream in(&notesFile);
-            rideNotes->setPlainText(in.readAll());
-            notesFile.close();
-        }
-        else {
-            QMessageBox::critical(
-                this, tr("Read Error"),
-                tr("Can't read notes file %1").arg(notesPath));
-        }
-    }
-
-    currentNotesFile = ride->notesFileName;
-    currentNotesChanged = false;
-}
-
-void MainWindow::saveNotes() 
-{
-    if ((currentNotesFile != "") && currentNotesChanged) {
-        QString notesPath = 
-            home.absolutePath() + "/" + currentNotesFile;
-        QString tmpPath = notesPath + ".tmp";
-        QFile tmp(tmpPath);
-        if (tmp.open(QFile::WriteOnly | QFile::Truncate)) {
-            QTextStream out(&tmp);
-            out << rideNotes->toPlainText();
-            tmp.close();
-            QFile::remove(notesPath);
-            if (rename(tmpPath.toAscii().constData(),
-                       notesPath.toAscii().constData()) == -1) {
-                QMessageBox::critical(
-                    this, tr("Write Error"),
-                    tr("Can't rename %1 to %2")
-                    .arg(tmpPath).arg(notesPath));
-            }
-        }
-        else {
-            QMessageBox::critical(
-                this, tr("Write Error"),
-                tr("Can't write notes file %1").arg(tmpPath));
-        }
-    }
-}
-
-void 
-MainWindow::resizeEvent(QResizeEvent*)
-{
-    settings->setValue(GC_SETTINGS_MAIN_GEOM, geometry());
-}
-
-void 
-MainWindow::showOptions()
-{
-    ConfigDialog *cd = new ConfigDialog(home, zones_, this);
-    cd->exec();
-    zonesChanged();
-}
-
-void 
-MainWindow::moveEvent(QMoveEvent*)
-{
-    settings->setValue(GC_SETTINGS_MAIN_GEOM, geometry());
-}
-
-void
-MainWindow::closeEvent(QCloseEvent* event)
-{
-    if (saveRideExitDialog() == false) event->ignore();
-    else {
-        saveNotes();
-        QApplication::clipboard()->setText("");
-    }
-}
-
-void
-MainWindow::leftLayoutMoved()
-{
-    settings->setValue(GC_SETTINGS_CALENDAR_SIZES, leftLayout->saveState());
-}
-
-void
-MainWindow::splitterMoved()
-{
-    settings->setValue(GC_SETTINGS_SPLITTER_SIZES, splitter->saveState());
-}
-
-void
-MainWindow::summarySplitterMoved()
-{
-    settings->setValue(GC_SETTINGS_SUMMARYSPLITTER_SIZES, summarySplitter->saveState());
-}
-// set the rider value of CP to the value derived from the CP model extraction
-void
-MainWindow::setCriticalPower(int cp)
-{
-  // determine in which range to write the value: use the range associated with the presently selected ride
-  int range;
-  if (ride)
-      range = ride->zoneRange();
-  else {
-      QDate today = QDate::currentDate();
-      range = zones_->whichRange(today);
-  }
-
-  // add a new range if we failed to find a valid one
-  if (range < 0) {
-    // create an infinite range
-    zones_->addZoneRange();
-    range = 0;
-  }
-
-  zones_->setCP(range, cp);        // update the CP value
-  zones_->setZonesFromCP(range);   // update the zones based on the value of CP
-  zones_->write(home);             // write the output file
-
-  QDate startDate = zones_->getStartDate(range);
-  QDate endDate   =  zones_->getEndDate(range);
-  QMessageBox::information(
-			   this,
-			   tr("CP saved"),
-			   tr("Range from %1 to %2\nRider CP set to %3 watts") .
-			   arg(startDate.isNull() ? "BEGIN" : startDate.toString()) .
-			   arg(endDate.isNull() ? "END" : endDate.toString()) .
-			   arg(cp)
-			   );
-  zonesChanged();
-}
-
-void
-MainWindow::tabChanged(int)
-{
-    rideSelected();
-}
-
-void
-MainWindow::aboutDialog()
-{
-    QMessageBox::about(this, tr("About GoldenCheetah"), tr(
-            "<center>"
-            "<h2>GoldenCheetah</h2>"
-            "Cycling Power Analysis Software<br>for Linux, Mac, and Windows"
-            "<p>Build date: %1 %2"
-            "<p>Version: %3"
-            "<p>GoldenCheetah is licensed under the<br>"
-            "<a href=\"http://www.gnu.org/copyleft/gpl.html\">GNU General "
-            "Public License</a>."
-            "<p>Source code can be obtained from<br>"
-            "<a href=\"http://goldencheetah.org/\">"
-            "http://goldencheetah.org/</a>."
-            "<p>Ride files and other data are stored in<br>"
-            "<a href=\"%4\">%5</a>"
-            "</center>"
-            )
-            .arg(__DATE__)
-            .arg(__TIME__)
-            .arg(GC_VERSION)
-            .arg(QString(QUrl::fromLocalFile(home.absolutePath()).toEncoded()))
-            .arg(home.absolutePath().replace(" ", "&nbsp;")));
-}
-
-
-void MainWindow::importRideToDB()
-{
-    metricDB->refreshMetrics();
-}
-
-void MainWindow::scanForMissing()
-{
-    metricDB->refreshMetrics();
-}
-
-
-
-void
-MainWindow::notesChanged()
-{
-    currentNotesChanged = true;
-}
-
-void MainWindow::showTools()
-{
-   ToolsDialog *td = new ToolsDialog();
-   td->show();
-}
-
-void
 MainWindow::saveRide()
 {
-    saveRideSingleDialog(ride); // will update Dirty flag if saved
+    // no ride
+    if (currentTab->context->ride == NULL) {
+        QMessageBox oops(QMessageBox::Critical, tr("No Activity To Save"),
+                         tr("There is no currently selected activity to save."));
+        oops.exec();
+        return;
+    }
+
+    // flush in-flight changes
+    currentTab->context->notifyMetadataFlush();
+
+    // nothing to do if not dirty
+    if (currentTab->context->ride->isDirty() == false) return;
+
+    // save
+    if (currentTab->context->ride)
+        saveRideSingleDialog(currentTab->context, currentTab->context->ride); // will signal save to everyone
 }
 
 void
 MainWindow::revertRide()
 {
-    ride->freeMemory();
-    ride->ride(); // force re-load
+    currentTab->context->ride->close();
+    currentTab->context->ride->ride(); // force re-load
 
     // in case reverted ride has different starttime
-    ride->setStartTime(ride->ride()->startTime()); // Note: this will also signal rideSelected()
-    ride->ride()->emitReverted();
+    currentTab->context->ride->setStartTime(currentTab->context->ride->ride()->startTime()); 
+    currentTab->context->ride->ride()->emitReverted();
+
+    // and notify everyone we changed which also has the side
+    // effect of updating the cached values too
+    currentTab->context->notifyRideSelected(currentTab->context->ride);
 }
 
 void
 MainWindow::splitRide()
 {
-    (new SplitRideDialog(this))->exec();
+    if (currentTab->context->ride && currentTab->context->ride->ride() && currentTab->context->ride->ride()->dataPoints().count()) (new SplitActivityWizard(currentTab->context))->exec();
+    else {
+        if (!currentTab->context->ride || !currentTab->context->ride->ride())
+            QMessageBox::critical(this, tr("Split Activity"), tr("No activity selected"));
+        else
+            QMessageBox::critical(this, tr("Split Activity"), tr("Current activity contains no data to split"));
+    }
+}
+
+void
+MainWindow::mergeRide()
+{
+    if (currentTab->context->ride && currentTab->context->ride->ride() && currentTab->context->ride->ride()->dataPoints().count()) (new MergeActivityWizard(currentTab->context))->exec();
+    else {
+        if (!currentTab->context->ride || !currentTab->context->ride->ride())
+            QMessageBox::critical(this, tr("Split Activity"), tr("No activity selected"));
+        else
+            QMessageBox::critical(this, tr("Split Activity"), tr("Current activity contains no data to merge"));
+    }
 }
 
 void
 MainWindow::deleteRide()
 {
-    QTreeWidgetItem *_item = treeWidget->currentItem();
-    if (_item==NULL || _item->type() != RIDE_TYPE)
+    RideItem *_item = currentTab->context->ride;
+
+    if (_item==NULL) { 
+        QMessageBox::critical(this, tr("Delete Activity"), tr("No activity selected!"));
         return;
+    }
+
     RideItem *item = static_cast<RideItem*>(_item);
     QMessageBox msgBox;
-    msgBox.setText(tr("Are you sure you want to delete the ride:"));
+    msgBox.setText(tr("Are you sure you want to delete the activity:"));
     msgBox.setInformativeText(item->fileName);
     QPushButton *deleteButton = msgBox.addButton(tr("Delete"),QMessageBox::YesRole);
     msgBox.setStandardButtons(QMessageBox::Cancel);
@@ -1431,95 +1404,610 @@ MainWindow::deleteRide()
     msgBox.setIcon(QMessageBox::Critical);
     msgBox.exec();
     if(msgBox.clickedButton() == deleteButton)
-        removeCurrentRide();
+        currentTab->context->athlete->removeCurrentRide();
 }
 
-/*
- *  This slot gets called when the user picks a new date, using the mouse,
- *  in the calendar.  We have to adjust TreeView to match.
- */
-void MainWindow::dateChanged(const QDate &date)
-{
-    for (int i = 0; i < allRides->childCount(); i++)
-    {
-        ride = (RideItem*) allRides->child(i);
-        if (ride->dateTime.date() == date) {
-            treeWidget->scrollToItem(allRides->child(i),
-                QAbstractItemView::EnsureVisible);
-            treeWidget->setCurrentItem(allRides->child(i));
-            i = allRides->childCount();
-        }
-    }
-}
-
-// notify children that config has changed
+/*----------------------------------------------------------------------
+ * Realtime Devices and Workouts
+ *--------------------------------------------------------------------*/
 void
-MainWindow::notifyConfigChanged()
+MainWindow::addDevice()
 {
-    // re-read Zones in case it changed
-    QFile zonesFile(home.absolutePath() + "/power.zones");
-    if (zonesFile.exists()) {
-        if (!zones_->read(zonesFile)) {
-            QMessageBox::critical(this, tr("Zones File Error"),
-                                 zones_->errorString());
-        }
-       else if (! zones_->warningString().isEmpty())
-            QMessageBox::warning(this, tr("Reading Zones File"), zones_->warningString());
-    }
 
-    // re-read Hr Zones in case it changed
-    QFile hrZonesFile(home.absolutePath() + "/hr.zones");
-    if (hrZonesFile.exists()) {
-        if (!hrZones_->read(hrZonesFile)) {
-            QMessageBox::critical(this, tr("Hr Zones File Error"),
-                                  hrZones_->errorString());
-        }
-        else if (! hrZones_->warningString().isEmpty())
-            QMessageBox::warning(this, tr("Reading Hr Zones File"), hrZones_->warningString());
-    }
+    // lets get a new one
+    AddDeviceWizard *p = new AddDeviceWizard(currentTab->context);
+    p->show();
 
-    // now tell everyone else
-    configChanged();
 }
 
-// notify children that rideSelected
-// called by RideItem when its date/time changes
+/*----------------------------------------------------------------------
+ * Cyclists
+ *--------------------------------------------------------------------*/
+
 void
-MainWindow::notifyRideSelected()
+MainWindow::newCyclistWindow()
 {
-    rideSelected();
+    QDir newHome = currentTab->context->athlete->home->root();
+    newHome.cdUp();
+    QString name = ChooseCyclistDialog::newCyclistDialog(newHome, this);
+    if (!name.isEmpty()) openWindow(name);
 }
 
 void
-MainWindow::manualProcess(QString name)
+MainWindow::newCyclistTab()
 {
-    // open a dialog box and let the users
-    // configure the options to use
-    // and also show the explanation
-    // of what this function does
-    // then call it!
-    RideItem *rideitem = (RideItem*)currentRideItem();
-    if (rideitem) {
-        ManualDataProcessorDialog *p = new ManualDataProcessorDialog(this, name, rideitem);
-        p->setWindowModality(Qt::ApplicationModal); // don't allow select other ride or it all goes wrong!
-        p->exec();
-    }
+    QDir newHome = currentTab->context->athlete->home->root();
+    newHome.cdUp();
+    QString name = ChooseCyclistDialog::newCyclistDialog(newHome, this);
+    if (!name.isEmpty()) openTab(name);
 }
 
-#ifdef GC_HAVE_LIBOAUTH
+void
+MainWindow::openWindow(QString name)
+{
+    // open window...
+    QDir home(gcroot);
+    home.cd(name);
+
+    if (!home.exists()) return;
+
+    GcUpgrade v3;
+    if (!v3.upgradeConfirmedByUser(home)) return;
+
+    // main window will register itself
+    MainWindow *main = new MainWindow(home);
+    main->show();
+    main->ridesAutoImport();
+}
+
+void
+MainWindow::closeWindow()
+{
+    // just call close, we might do more later
+    close();
+}
+
+void
+MainWindow::openTab(QString name)
+{
+    QDir home(gcroot);
+    home.cd(name);
+
+    if (!home.exists()) return;
+
+    GcUpgrade v3;
+    if (!v3.upgradeConfirmedByUser(home)) return;
+
+    setUpdatesEnabled(false);
+
+    // bootstrap
+    Context *context = new Context(this);
+    context->athlete = new Athlete(context, home);
+
+    // now open up a new tab
+    currentTab = new Tab(context);
+
+    // first tab
+    tabs.insert(currentTab->context->athlete->home->root().dirName(), currentTab);
+
+    // stack, list and bar all share a common index
+    tabList.append(currentTab);
+    tabbar->addTab(currentTab->context->athlete->home->root().dirName());
+    tabStack->addWidget(currentTab);
+
+    // switch to newly created athlete
+    tabbar->setCurrentIndex(tabList.count()-1);
+
+    // kick off on analysis
+    setWindowTitle(currentTab->context->athlete->home->root().dirName());
+    selectAnalysis(); // sets scope bar ..
+
+    // now apply current
+    saveGCState(currentTab->context);
+    restoreGCState(currentTab->context);
+
+    // show the tabbar if we're gonna open tabs -- but wait till the last second
+    // to show it to avoid crappy paint artefacts
+    showTabbar(true);
+
+    setUpdatesEnabled(true);
+
+    // now do the automatic ride file import
+    context->athlete->importFilesWhenOpeningAthlete();
+}
+
+void
+MainWindow::closeTabClicked(int index)
+{
+    Tab *tab = tabList[index];
+    if (saveRideExitDialog(tab->context) == false) return;
+
+    // lets wipe it
+    removeTab(tab);
+}
+
+bool
+MainWindow::closeTab()
+{
+    // wipe it down ...
+    if (saveRideExitDialog(currentTab->context) == false) return false;
+
+    // if its the last tab we close the window
+    if (tabList.count() == 1)
+        closeWindow();
+    else {
+        removeTab(currentTab);
+    }
+
+    // we did it
+    return true;
+}
+
+// no questions asked just wipe away the current tab
+void
+MainWindow::removeTab(Tab *tab)
+{
+    setUpdatesEnabled(false);
+
+    if (tabList.count() == 2) showTabbar(false); // don't need it for one!
+
+    // save the named searches
+    tab->context->athlete->namedSearches->write();
+
+    // clear the clipboard if neccessary
+    QApplication::clipboard()->setText("");
+
+    // Remember where we were
+    QString name = tab->context->athlete->cyclist;
+
+    // switch to neighbour (currentTab will change)
+    int index = tabList.indexOf(tab);
+
+    // if we're not the last then switch
+    // before removing so the GUI is clean
+    if (tabList.count() > 1) {
+        if (index) switchTab(index-1);
+        else switchTab(index+1);
+    }
+
+    // close gracefully
+    tab->close();
+    tab->context->athlete->close();
+
+    // remove from state
+    tabs.remove(name);
+    tabList.removeAt(index);
+    tabbar->removeTab(index);
+    tabStack->removeWidget(tab);
+
+    // delete the objects
+    Context *context = tab->context;
+    Athlete *athlete = tab->context->athlete;
+
+    delete tab;
+    delete athlete;
+    delete context;
+
+    setUpdatesEnabled(true);
+
+    return;
+}
+
+void
+MainWindow::setOpenWindowMenu()
+{
+    // wipe existing
+    openWindowMenu->clear();
+
+    // get a list of all cyclists
+    QStringListIterator i(QDir(gcroot).entryList(QDir::Dirs | QDir::NoDotAndDotDot));
+    while (i.hasNext()) {
+
+        QString name = i.next();
+
+        // new action
+        QAction *action = new QAction(QString("%1").arg(name), this);
+
+        // get the config directory
+        AthleteDirectoryStructure subDirs(name);
+        // icon / mugshot ?
+        QString icon = QString("%1/%2/%3/avatar.png").arg(gcroot).arg(name).arg(subDirs.config().dirName());
+        if (QFile(icon).exists()) action->setIcon(QIcon(icon));
+
+        // only allow selection of cyclists which are not already open
+        foreach (MainWindow *x, mainwindows) {
+            QMapIterator<QString, Tab*> t(x->tabs);
+            while (t.hasNext()) {
+                t.next();
+                if (t.key() == name)
+                    action->setEnabled(false);
+            }
+        }
+
+        // add to menu
+        openWindowMenu->addAction(action);
+        connect(action, SIGNAL(triggered()), windowMapper, SLOT(map()));
+        windowMapper->setMapping(action, name);
+    }
+
+    // add create new option
+    openWindowMenu->addSeparator();
+    openWindowMenu->addAction(tr("&New Athlete..."), this, SLOT(newCyclistWindow()), tr("Ctrl+N"));
+}
+
+void
+MainWindow::setOpenTabMenu()
+{
+    // wipe existing
+    openTabMenu->clear();
+
+    // get a list of all cyclists
+    QStringListIterator i(QDir(gcroot).entryList(QDir::Dirs | QDir::NoDotAndDotDot));
+    while (i.hasNext()) {
+
+        QString name = i.next();
+
+        // new action
+        QAction *action = new QAction(QString("%1").arg(name), this);
+
+        // get the config directory
+        AthleteDirectoryStructure subDirs(name);
+        // icon / mugshot ?
+        QString icon = QString("%1/%2/%3/avatar.png").arg(gcroot).arg(name).arg(subDirs.config().dirName());
+        if (QFile(icon).exists()) action->setIcon(QIcon(icon));
+
+        // only allow selection of cyclists which are not already open
+        foreach (MainWindow *x, mainwindows) {
+            QMapIterator<QString, Tab*> t(x->tabs);
+            while (t.hasNext()) {
+                t.next();
+                if (t.key() == name)
+                    action->setEnabled(false);
+            }
+        }
+
+        // add to menu
+        openTabMenu->addAction(action);
+        connect(action, SIGNAL(triggered()), tabMapper, SLOT(map()));
+        tabMapper->setMapping(action, name);
+    }
+
+    // add create new option
+    openTabMenu->addSeparator();
+    openTabMenu->addAction(tr("&New Athlete..."), this, SLOT(newCyclistTab()), tr("Ctrl+N"));
+}
+
+void
+MainWindow::saveGCState(Context *context)
+{
+    // save all the current state to the supplied context
+    context->showSidebar = showhideSidebar->isChecked();
+    //context->showTabbar = showhideTabbar->isChecked();
+    context->showLowbar = showhideLowbar->isChecked();
+#ifndef Q_OS_MAC // not on a Mac
+    context->showToolbar = showhideToolbar->isChecked();
+#endif
+    context->searchText = searchBox->text();
+    context->viewIndex = scopebar->selected();
+    context->style = styleAction->isChecked();
+    context->viewIndex = scopebar->selected();
+}
+
+void
+MainWindow::restoreGCState(Context *context)
+{
+    // restore window state from the supplied context
+    showSidebar(context->showSidebar);
+#ifndef Q_OS_MAC // not on a Mac
+    showToolbar(context->showToolbar);
+#endif
+    //showTabbar(context->showTabbar);
+    showLowbar(context->showLowbar);
+    scopebar->setSelected(context->viewIndex);
+    scopebar->setContext(context);
+    scopebar->setHighlighted(); // to reflect context
+    searchBox->setContext(context);
+    searchBox->setText(context->searchText);
+}
+
+void
+MainWindow::switchTab(int index)
+{
+    if (index < 0) return;
+
+    setUpdatesEnabled(false);
+
+#ifdef Q_OS_MAC // close buttons on the left on Mac
+    // Only have close button on current tab (prettier)
+    for(int i=0; i<tabbar->count(); i++) tabbar->tabButton(i, QTabBar::LeftSide)->hide();
+    tabbar->tabButton(index, QTabBar::LeftSide)->show();
+#else
+    // Only have close button on current tab (prettier)
+    for(int i=0; i<tabbar->count(); i++) tabbar->tabButton(i, QTabBar::RightSide)->hide();
+    tabbar->tabButton(index, QTabBar::RightSide)->show();
+#endif
+
+    // save how we are
+    saveGCState(currentTab->context);
+
+    currentTab = tabList[index];
+    tabStack->setCurrentIndex(index);
+
+    // restore back
+    restoreGCState(currentTab->context);
+
+    setWindowTitle(currentTab->context->athlete->home->root().dirName());
+
+    setUpdatesEnabled(true);
+}
+
+
+/*----------------------------------------------------------------------
+ * MetricDB
+ *--------------------------------------------------------------------*/
+
+void
+MainWindow::exportMetrics()
+{
+    // if the refresh process is running, try again when its completed
+    if (currentTab->context->athlete->rideCache->isRunning()) {
+        QMessageBox::warning(this, tr("Refresh in Progress"), 
+        "A metric refresh is currently running, please try again once that has completed.");
+        return;
+    }
+
+    // all good lets choose a file
+    QString fileName = QFileDialog::getSaveFileName( this, tr("Export Metrics"), QDir::homePath(), tr("Comma Separated Variables (*.csv)"));
+    if (fileName.length() == 0) return;
+
+    // export
+    currentTab->context->athlete->rideCache->writeAsCSV(fileName);
+}
+
+/*----------------------------------------------------------------------
+ * Twitter
+ *--------------------------------------------------------------------*/
+#ifdef GC_HAVE_KQOAUTH
 void
 MainWindow::tweetRide()
 {
-    QTreeWidgetItem *_item = treeWidget->currentItem();
-    if (_item==NULL || _item->type() != RIDE_TYPE)
-        return;
+    RideItem *_item = currentTab->context->ride;
+    if (_item==NULL) return;
 
     RideItem *item = dynamic_cast<RideItem*>(_item);
-    item->computeMetrics();
 
-    TwitterDialog *twitterDialog = new TwitterDialog(this, item);
-    twitterDialog->setWindowModality(Qt::ApplicationModal);
-    twitterDialog->exec();
+    if (item) { // menu is disabled anyway, but belt and braces
+        TwitterDialog *twitterDialog = new TwitterDialog(currentTab->context, item);
+        twitterDialog->setWindowModality(Qt::ApplicationModal);
+        twitterDialog->exec();
+    }
 }
 #endif
+
+/*----------------------------------------------------------------------
+* Share : Twitter, Strava, RideWithGPS
+*--------------------------------------------------------------------*/
+
+void
+MainWindow::share()
+{
+    if (currentTab->context->ride) { // menu is disabled anyway, but belt and braces
+        ShareDialog d(currentTab->context, currentTab->context->ride);
+        d.exec();
+    }
+}
+
+/*----------------------------------------------------------------------
+ * Import Workout from Disk
+ *--------------------------------------------------------------------*/
+void
+MainWindow::importWorkout()
+{
+    // go look at last place we imported workouts from...
+    QVariant lastDirVar = appsettings->value(this, GC_SETTINGS_LAST_WORKOUT_PATH);
+    QString lastDir = (lastDirVar != QVariant())
+        ? lastDirVar.toString() : QDir::homePath();
+
+    // anything for now, we could add filters later
+    QStringList allFormats;
+    allFormats << "All files (*.*)";
+    QStringList fileNames = QFileDialog::getOpenFileNames(this, tr("Import from File"), lastDir, allFormats.join(";;"));
+
+    // lets process them
+    if (!fileNames.isEmpty()) {
+
+        // save away last place we looked
+        lastDir = QFileInfo(fileNames.front()).absolutePath();
+        appsettings->setValue(GC_SETTINGS_LAST_WORKOUT_PATH, lastDir);
+
+        QStringList fileNamesCopy = fileNames; // QT doc says iterate over a copy
+
+        // import them via the workoutimporter
+        Library::importFiles(currentTab->context, fileNamesCopy);
+    }
+}
+/*----------------------------------------------------------------------
+ * ErgDB
+ *--------------------------------------------------------------------*/
+
+void
+MainWindow::downloadErgDB()
+{
+    QString workoutDir = appsettings->value(this, GC_WORKOUTDIR).toString();
+
+    QFileInfo fi(workoutDir);
+
+    if (fi.exists() && fi.isDir()) {
+        ErgDBDownloadDialog *d = new ErgDBDownloadDialog(currentTab->context);
+        d->exec();
+    } else{
+        QMessageBox::critical(this, tr("Workout Directory Invalid"),
+        "The workout directory is not configured, or the directory"
+        " selected no longer exists.\n\n"
+        "Please check your preference settings.");
+    }
+}
+
+/*----------------------------------------------------------------------
+ * Workout/Media Library
+ *--------------------------------------------------------------------*/
+void
+MainWindow::manageLibrary()
+{
+    LibrarySearchDialog *search = new LibrarySearchDialog(currentTab->context);
+    search->exec();
+}
+
+/*----------------------------------------------------------------------
+ * TrainingPeaks.com
+ *--------------------------------------------------------------------*/
+
+#ifdef GC_HAVE_SOAP
+void
+MainWindow::uploadTP()
+{
+    if (currentTab->context->ride) {
+        TPUploadDialog uploader(currentTab->context->athlete->cyclist, currentTab->context->ride->ride(), currentTab->context);
+        uploader.exec();
+    }
+}
+
+void
+MainWindow::downloadTP()
+{
+    TPDownloadDialog downloader(currentTab->context);
+    downloader.exec();
+}
+#endif
+
+
+/*----------------------------------------------------------------------
+ * Utility
+ *--------------------------------------------------------------------*/
+
+/*----------------------------------------------------------------------
+ * Notifiers - application level events
+ *--------------------------------------------------------------------*/
+
+void
+MainWindow::configChanged(qint32)
+{
+
+// Windows
+#ifdef WIN32
+    QString menuColorString = (GCColor::isFlat() ? GColor(CCHROME).name() : "rgba(225,225,225)");
+    menuBar()->setStyleSheet(QString("QMenuBar { color: black; background: %1; }"
+                             "QMenuBar::item { color: black; background: %1; }").arg(menuColorString));
+#endif
+
+// Mac
+#ifdef Q_OS_MAC
+    if (GCColor::isFlat()) {
+
+#if (QT_VERSION >= 0x50201)
+        // flat mode
+        head->setStyleSheet(QString(" QToolBar:active { border: 0px; background-color: %1; } "
+                            " QToolBar:!active { border: 0px; background-color: %1; }").arg(GColor(CCHROME).name()));
+        blackline->hide();
+#endif
+
+    } else {
+
+        // metallic mode
+#if QT_VERSION >= 0x50201
+        // black line back, but only if we aren't showing the tabbar
+        if (!showhideTabbar->isChecked()) blackline->show();
+        head->setStyleSheet(" QToolBar:!active { border: 0px; background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #F0F0F0, stop: 1 #E8E8E8 ); } "
+                            " QToolBar:active { border: 0px; background-color: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #D9D9D9, stop: 1 #B5B5B5 ); } ");
+#endif
+    }
+#endif
+
+#ifndef Q_OS_MAC
+    QPalette tabbarPalette;
+    tabbar->setAutoFillBackground(true);
+    tabbar->setShape(QTabBar::RoundedSouth);
+    tabbar->setDrawBase(false);
+
+    if (GCColor::isFlat())
+        tabbarPalette.setBrush(backgroundRole(), GColor(CCHROME));
+    else
+        tabbarPalette.setBrush(backgroundRole(), QColor("#B3B4B6"));
+    tabbar->setPalette(tabbarPalette);
+#endif
+
+    // set the default fontsize
+    QFont font;
+    font.fromString(appsettings->value(NULL, GC_FONT_DEFAULT, QFont().toString()).toString());
+    font.setPointSize(appsettings->value(NULL, GC_FONT_DEFAULT_SIZE, 10).toInt());
+    QApplication::setFont(font); // set default font
+
+    head->updateGeometry();
+    repaint();
+
+}
+
+/*----------------------------------------------------------------------
+ * Measures
+ *--------------------------------------------------------------------*/
+
+void
+MainWindow::downloadMeasures()
+{
+    currentTab->context->athlete->withingsDownload->download();
+}
+
+void
+MainWindow::refreshCalendar()
+{
+#ifdef GC_HAVE_ICAL
+    currentTab->context->athlete->davCalendar->download();
+    currentTab->context->athlete->calendarDownload->download();
+#endif
+}
+
+/*----------------------------------------------------------------------
+ * Calendar
+ *--------------------------------------------------------------------*/
+
+#ifdef GC_HAVE_ICAL
+void
+MainWindow::uploadCalendar()
+{
+    if (currentTab->context->currentRideItem())
+        currentTab->context->athlete->davCalendar->upload((RideItem*)currentTab->context->currentRideItem()); // remove const coz it updates the ride
+                                               // to set GID and upload date
+}
+#endif
+
+void
+MainWindow::actionClicked(int index)
+{
+    switch(index) {
+
+    default:
+    case 0: currentTab->addIntervals();
+            break;
+
+    case 1 : splitRide();
+            break;
+
+    case 2 : deleteRide();
+            break;
+
+    }
+}
+
+void
+MainWindow::addIntervals()
+{
+    currentTab->addIntervals();
+}
+
+void
+MainWindow::ridesAutoImport() {
+
+    currentTab->context->athlete->importFilesWhenOpeningAthlete();
+
+}
 

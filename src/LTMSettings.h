@@ -18,9 +18,14 @@
 
 #ifndef _GC_LTMSettings_h
 #define _GC_LTMSettings_h 1
+#include "GoldenCheetah.h"
 
 #include <QtGui>
 #include <QList>
+#include <QDialog>
+#include <QDataStream>
+#include <QMessageBox>
+
 #include <qwt_plot.h>
 #include <qwt_plot_marker.h>
 #include <qwt_plot_curve.h>
@@ -28,46 +33,97 @@
 #include <qwt_scale_draw.h>
 #include <qwt_symbol.h>
 
+#include "RideFile.h" // for SeriesType
+#include "Specification.h" // for SeriesType
+
 class LTMTool;
-class SummaryMetrics;
-class MainWindow;
+class LTMSettings;
+class Context;
 class RideMetric;
+class RideBest;
 
 // group by settings
 #define LTM_DAY     1
 #define LTM_WEEK    2
 #define LTM_MONTH   3
 #define LTM_YEAR    4
+#define LTM_TOD     5
+#define LTM_ALL     6
 
 // type of metric
-// is it from the ridemetric factory or PMC stresscalculator or metadata
-#define METRIC_DB     1
-#define METRIC_PM     2
-#define METRIC_META   3
+#define METRIC_DB        1
+#define METRIC_PM        2
+#define METRIC_META      3
+#define METRIC_MEASURE   4 // DEPRECATED DO NOT USE
+#define METRIC_BEST      5
+#define METRIC_ESTIMATE  6
+#define METRIC_STRESS    7
+
+// type of estimate
+#define ESTIMATE_WPRIME  0
+#define ESTIMATE_CP      1
+#define ESTIMATE_FTP     2
+#define ESTIMATE_PMAX    3
+#define ESTIMATE_BEST    4
+#define ESTIMATE_EI      5
+
+// type of stress
+#define STRESS_STS       0
+#define STRESS_LTS       1
+#define STRESS_SB        2
+#define STRESS_RR        3
 
 // We catalogue each metric and the curve settings etc here
 class MetricDetail {
     public:
 
-    MetricDetail() : type(METRIC_DB), name(""), metric(NULL), smooth(false), trend(false), topN(0),
-                     baseline(0.0), curveStyle(QwtPlotCurve::Lines), symbolStyle(QwtSymbol::NoSymbol),
+    MetricDetail() : type(METRIC_DB), stack(false), hidden(false), model(""), name(""), metric(NULL), stressType(0),
+                     smooth(false), trendtype(0), topN(0), lowestN(0), topOut(0), baseline(0.0), 
+                     curveStyle(QwtPlotCurve::Lines), symbolStyle(QwtSymbol::NoSymbol),
                      penColor(Qt::black), penAlpha(0), penWidth(1.0), penStyle(0),
-                     brushColor(Qt::black), brushAlpha(0) {}
+                     brushColor(Qt::black), brushAlpha(0), fillCurve(false), labels(false), curve(NULL) {}
 
     bool operator< (MetricDetail right) const { return name < right.name; }
 
     int type;
+    bool stack; // should this be stacked?
+    bool hidden; // should this be hidden ? (toggled via clicking on legend)
 
-    QString symbol, name;
+    QString model; // short code for model selected
+    int estimate; // 0-4 for W', CP, FTP, PMAX
+    int estimateDuration;       // n x units below for seconds
+    int estimateDuration_units; // 1=secs, 60=mins, 3600=hours
+    bool wpk; // absolute or wpk 
+
+    // for METRICS
+    QString symbol;
+    QString bestSymbol;
+    QString name, units;
     const RideMetric *metric;
 
+    // for BESTS
+    int duration;       // n x units below for seconds
+    int duration_units; // 1=secs, 60=mins, 3600=hours
+    RideFile::SeriesType series; // what series are we doing the peak for
+
+    // for STRESS
+    int stressType;     // 0-LTS 1-STS 2-SB 3-RR
+
+    // GENERAL SETTINGS FOR A METRIC
     QString uname, uunits; // user specified name and units (axis choice)
 
     // user configurable settings
-    bool smooth,         // smooth the curve
-         trend;          // add a trend line
+    bool smooth;         // smooth the curve
+    int trendtype;       // 0 - no trend, 1 - linear, 2 - quadratic
     int topN;            // highlight top N points
+    int lowestN;            // highlight top N points
+    int topOut;          // highlight N ranked outlier points
     double baseline;     // baseline for chart
+
+    // filter
+    bool showOnPlot;
+    int filter;         // 0 no filter, 1 = include, 2 = exclude
+    double from, to;
 
     // curve type and symbol
     QwtPlotCurve::CurveStyle curveStyle;      // how should this metric be plotted?
@@ -82,15 +138,37 @@ class MetricDetail {
     // brush
     QColor brushColor;
     int brushAlpha;
+
+    // fill curve
+    bool fillCurve;
+
+    // text labels against values
+    bool labels;
+
+    // curve on the chart to spot this...
+    QwtPlotCurve *curve;
 };
+
+// so we can marshal and unmarshall LTMSettings when we save
+// asa QVariant we need to provide our own functions to
+// do this
+QDataStream &operator<<(QDataStream &out, const LTMSettings &settings);
+QDataStream &operator>>(QDataStream &in, LTMSettings &settings);
 
 // used to maintain details about the metrics being plotted
 class LTMSettings {
 
     public:
 
+        LTMSettings() {
+            // we need to register the stream operators
+            qRegisterMetaTypeStreamOperators<LTMSettings>("LTMSettings");
+            bests = NULL;
+            ltmTool = NULL;
+        }
+
         void writeChartXML(QDir, QList<LTMSettings>);
-        void readChartXML(QDir, QList<LTMSettings>&charts);
+        void readChartXML(QDir, bool, QList<LTMSettings>&charts);
 
         QString name;
         QString title;
@@ -98,58 +176,40 @@ class LTMSettings {
         QDateTime end;
         int groupBy;
         bool shadeZones;
+        bool showData;
+        bool legend;
+        bool events;
+        bool stack;
+        int stackWidth;
+
+        Specification specification;
         QList<MetricDetail> metrics;
-        QList<SummaryMetrics> *data;
+        QList<RideBest> *bests;
+
         LTMTool *ltmTool;
+        QString field1, field2;
 };
+Q_DECLARE_METATYPE(LTMSettings);
 
 class EditChartDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        EditChartDialog(MainWindow *, LTMSettings *, QList<LTMSettings>);
+        EditChartDialog(Context *, LTMSettings *, QList<LTMSettings>);
 
     public slots:
         void okClicked();
         void cancelClicked();
 
     private:
-        MainWindow *mainWindow;
+        Context *context;
         LTMSettings *settings;
 
         QList<LTMSettings> presets;
         QLineEdit *chartName;
-        QPushButton *okButton, *cancelButton;
-};
-
-class ChartManagerDialog : public QDialog
-{
-    Q_OBJECT
-
-    public:
-        ChartManagerDialog(MainWindow *, QList<LTMSettings> *);
-
-    public slots:
-        void okClicked();
-        void cancelClicked();
-        void exportClicked();
-        void importClicked();
-        void upClicked();
-        void downClicked();
-        void renameClicked();
-        void deleteClicked();
-
-    private:
-        MainWindow *mainWindow;
-        QList<LTMSettings> *presets;
-
-        QLineEdit *chartName;
-
-        QTreeWidget *charts;
-
-        QPushButton *importButton, *exportButton;
-        QPushButton *upButton, *downButton, *renameButton, *deleteButton;
         QPushButton *okButton, *cancelButton;
 };
 

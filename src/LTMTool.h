@@ -18,14 +18,27 @@
 
 #ifndef _GC_LTMTool_h
 #define _GC_LTMTool_h 1
+#include "GoldenCheetah.h"
 
-#include "MainWindow.h"
+#include "Context.h"
 #include "Season.h"
 #include "RideMetric.h"
 #include "LTMSettings.h"
+#include "PDModel.h"
+
+#include "SearchFilterBox.h"
 
 #include <QDir>
+#include <QFileDialog>
 #include <QtGui>
+#include <QTableWidget>
+#include <QButtonGroup>
+#include <QStackedWidget>
+#include <QTextEdit>
+#include <QCheckBox>
+#include <QFormLayout>
+#include <QHeaderView>
+#include <QColorDialog>
 
 // tree widget types
 #define ROOT_TYPE   1
@@ -39,101 +52,186 @@
 class LTMTool : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        LTMTool(MainWindow *parent, const QDir &home);
+        LTMTool(Context *context, LTMSettings *settings);
 
-        const Season *currentDateRange() { return dateRange; }
-        void selectDateRange(int);
-        QList<QTreeWidgetItem *> selectedMetrics() { return metricTree->selectedItems(); }
-
-        QString metricName(QTreeWidgetItem *);
-        QString metricSymbol(QTreeWidgetItem *);
-        MetricDetail metricDetails(QTreeWidgetItem *);
-
-        // allow others to create and update season structures
-        int newSeason(QString, QDate, QDate, int);
-        void updateSeason(int, QString, QDate, QDate, int);
+        QList<MetricDetail> metrics;
+        MetricDetail* metricDetails(QString symbol);
+        static void translateMetrics(Context *context, LTMSettings *settings);
 
         // apply settings to the metric selector
-        void applySettings(LTMSettings *);
+        void applySettings();
+        void setUseSelected(int);;
+        int useSelected();
+
+        bool isFiltered() { return _amFiltered; }
+        QStringList &filters() { return filenames; }
+
+        LTMSettings *settings;
+
+        SearchFilterBox *searchBox;
+
+        // basic tab: accessed by LTMWindow hence public
+        QComboBox *groupBy;
+        QCheckBox *usePreset;
+        QCheckBox *shadeZones;
+        QCheckBox *showLegend;
+        QCheckBox *showData;
+        QCheckBox *showEvents;
+        QCheckBox *showStack;
+        QSlider *stackSlider;
+        QPushButton *saveButton;
+        QPushButton *applyButton;
+        QPushButton *newButton;
+        QTreeWidget *charts;
+
+        DateSettingsEdit *dateSetting;
+
+        static QList<MetricDetail> providePMmetrics();
+        static void getMetricsTranslationMap (QMap<QString, QString>& nMap, QMap<QString, QString>& uMap, bool useMetricUnits);
 
     signals:
 
-        void dateRangeSelected(const Season *);
-        void metricSelected();
+        void curvesChanged();
+        void filterChanged();
+        void useCustomRange(DateRange); // use the range passed...
+        void useStandardRange();        // fall back to standard date range...
+        void useThruToday();        // fall back to standard date range thru today
 
     private slots:
-        void dateRangeTreeWidgetSelectionChanged();
-        void dateRangePopup(QPoint);
-        void dateRangeChanged(QTreeWidgetItem *, int);
-        void renameRange();
-        void editRange();
-        void deleteRange();
-        void metricTreeWidgetSelectionChanged();
-        void metricTreePopup(QPoint);
-        void colorPicker();
         void editMetric();
-        void configChanged();
-        void readSeasons();
-        void writeSeasons();
+        void doubleClicked( int row, int column );
+        void addMetric();
+        void deleteMetric();
+        void moveMetricUp();
+        void moveMetricDown();
+
+        void clearFilter();
+        void setFilter(QStringList);
+
+        void presetsChanged();   // presets changed in the athlete class
+        void usePresetChanged(); // we changed the checkbox
+
+        void exportClicked();
+        void importClicked();
+        void editingStarted();
+        void editingFinished();
+        void upClicked();
+        void downClicked();
+        void renameClicked();
+        void deleteClicked();
+        void addCurrent();
 
     private:
 
+        // Helper function for default charts translation
         QwtPlotCurve::CurveStyle curveStyle(RideMetric::MetricType);
         QwtSymbol::Style symbolStyle(RideMetric::MetricType);
 
-        const QDir home;
-        MainWindow *main;
-        bool useMetricUnits;
+        Context *context;
+        bool active; // ignore season changed signals since we triggered them
 
-        QList<Season> seasons;
-        QTreeWidget *dateRangeTree;
-        QTreeWidgetItem *allDateRanges;
-        const Season *dateRange;
+        bool _amFiltered; // is a filter appling?
+        bool editing;
+        QStringList filenames; // filters
 
-        QList<MetricDetail> metrics;
-        QTreeWidget *metricTree;
-        QTreeWidgetItem *allMetrics;
+        QTabWidget *tabs;
 
-        QTreeWidgetItem *activeDateRange; // when using context menus
-        QTreeWidgetItem *activeMetric; // when using context menus
+        // preset tab:
+        QWidget *presetWidget;
+        QLineEdit *chartName;
+        QPushButton *importButton, *exportButton;
+        QPushButton *upButton, *downButton, *renameButton, *deleteButton;
 
-        QSplitter   *ltmSplitter;
+        // custom tab:
+        QTableWidget *customTable;
+        QPushButton *editCustomButton, *addCustomButton, *deleteCustomButton;
+#ifndef Q_OS_MAC
+        QToolButton *upCustomButton, *downCustomButton;
+#else
+        QPushButton *upCustomButton, *downCustomButton;
+#endif
+        void refreshCustomTable(int indexSelectedItem = -1); // refreshes the table from LTMSettings
 };
 
 class EditMetricDetailDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        EditMetricDetailDialog(MainWindow *, MetricDetail *);
+        EditMetricDetailDialog(Context *, LTMTool *, MetricDetail *);
 
     public slots:
         void colorClicked();
         void applyClicked();
         void cancelClicked();
 
+        void metricSelected();
+        int indexMetric(MetricDetail *metric);
+
+        void typeChanged();
+        void bestName();
+        void stressName();
+        void estimateName();
+
+        void modelChanged();
+        void estimateChanged();
+
     private:
-        MainWindow *mainWindow;
+        Context *context;
+        LTMTool *ltmTool;
         MetricDetail *metricDetail;
 
+        QRadioButton *chooseMetric, *chooseBest, *chooseEstimate, *chooseStress;
+        QButtonGroup *group;
+        QWidget *metricWidget, *bestWidget, *estimateWidget, *stressWidget;
+        QStackedWidget *typeStack;
+
+        // bests
+        QDoubleSpinBox *duration;
+        QComboBox *durationUnits;
+        QComboBox *dataSeries;
+
+        // metric
+        QTreeWidget *metricTree;
         QLineEdit *userName,
                   *userUnits;
 
+        // estimates
+        QList<PDModel*>models;
+        QComboBox *modelSelect;     // select 2p, 3p, multi etc
+        QComboBox *estimateSelect;  // select w', cp, ftp, pmax .. whichever is suported by model
+        QDoubleSpinBox *estimateDuration;
+        QComboBox *estimateDurationUnits;
+        QRadioButton *abs, *wpk;
+
+        // stress
+        QComboBox *stressTypeSelect; // STS, LTS, SB, RR et al
+
         QComboBox *curveStyle,
                   *curveSymbol;
+        QCheckBox *stack;
         QPushButton *curveColor;
+        QCheckBox *fillCurve;
+        QCheckBox *labels;
         QDoubleSpinBox *showBest,
+                       *showLowest,
+                       *showOut,
                        *baseLine;
-        QCheckBox *curveSmooth,
-                  *curveTrend;
-
+        QCheckBox *curveSmooth;
+        QComboBox *trendType; // replaces above with a selection of trend line types
         QPushButton *applyButton, *cancelButton;
 
         QColor penColor; // chosen from color Picker
         void setButtonIcon(QColor);
+
+        QList<RideFile::SeriesType> seriesList;
 };
 
 #endif // _GC_LTMTool_h

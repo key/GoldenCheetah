@@ -18,13 +18,21 @@
 
 #ifndef _GC_ModelWindow_h
 #define _GC_ModelWindow_h 1
+#include "GoldenCheetah.h"
 
 #include <QtGui>
 #include <QTimer>
-#include "MainWindow.h"
+#include <QDialog>
+#include <QCheckBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QFormLayout>
+#include "Context.h"
 
 class ModelPlot; // we don't include the header because it uses namespaces
 class ModelDataColor;
+class IntervalItem;
+class RideItem;
 
 class ModelSettings
 {
@@ -45,15 +53,57 @@ class ModelSettings
 };
 
 
-class ModelWindow : public QWidget
+class ModelWindow : public GcChartWindow
 {
     Q_OBJECT
+    G_OBJECT
+
+    Q_PROPERTY(int style READ style WRITE setStyle USER true)
+    Q_PROPERTY(bool grid READ isGrid WRITE setGrid USER true)
+    Q_PROPERTY(bool legend READ isLegend WRITE setLegend USER true)
+    Q_PROPERTY(bool frame READ isFrame WRITE setFrame USER true)
+    Q_PROPERTY(bool ignore READ isIgnore WRITE setIgnore USER true)
+    Q_PROPERTY(int preset READ preset WRITE setPreset USER true)
+    Q_PROPERTY(int xseries READ xseries WRITE setXSeries USER true)
+    Q_PROPERTY(int yseries READ yseries WRITE setYSeries USER true)
+    Q_PROPERTY(int zseries READ zseries WRITE setZSeries USER true)
+    Q_PROPERTY(int cseries READ cseries WRITE setCSeries USER true)
+    Q_PROPERTY(QString bin READ bin WRITE setBin USER true)
 
     public:
 
-        ModelWindow(MainWindow *, const QDir &);
+        ModelWindow(Context *);
+
+        // reveal
+        bool hasReveal() { return false; }
+
+        // set/get properties
+        int preset() const { return presetValues->currentIndex(); }
+        void setPreset(int x) { presetValues->setCurrentIndex(x); }
+        int xseries() const { return xSelector->currentIndex(); }
+        void setXSeries(int x) { xSelector->setCurrentIndex(x); }
+        int yseries() const { return ySelector->currentIndex(); }
+        void setYSeries(int x) { ySelector->setCurrentIndex(x); }
+        int zseries() const { return zSelector->currentIndex(); }
+        void setZSeries(int x) { zSelector->setCurrentIndex(x); }
+        int cseries() const { return colorSelector->currentIndex(); }
+        void setCSeries(int x) { colorSelector->setCurrentIndex(x); }
+        int style() const { return styleSelector->currentIndex(); }
+        void setStyle(int x) { styleSelector->setCurrentIndex(x); }
+        bool isIgnore() const { return ignore->isChecked(); }
+        void setIgnore(bool x) { ignore->setChecked(x); }
+        bool isGrid() const { return grid->isChecked(); }
+        void setGrid(bool x) { grid->setChecked(x); }
+        bool isFrame() const { return frame->isChecked(); }
+        void setFrame(bool x) { frame->setChecked(x); }
+        bool isLegend() const { return legend->isChecked(); }
+        void setLegend(bool x) { legend->setChecked(x); }
+        QString bin() const { return binWidthLineEdit->text(); }
+        void setBin(QString x) { binWidthLineEdit->setText(x); }
 
     public slots:
+
+        void configChanged(qint32);
         void rideSelected();
         void intervalSelected();
         void applyPreset(int);
@@ -71,12 +121,10 @@ class ModelWindow : public QWidget
 
     protected:
 
-        // passed from MainWindow
-        QDir home;
-        MainWindow *main;
-        bool useMetricUnits;
-        bool active;
+        // passed from Context *
+        Context *context;
 
+        bool active;
         bool dirty;             // settings changed but not reploted
         ModelSettings settings; // last used settings
 
@@ -86,7 +134,6 @@ class ModelWindow : public QWidget
         // layout
         ModelPlot *modelPlot;
 
-        // labels
         QLabel *presetLabel,
                *xLabel,
                *yLabel,
@@ -107,7 +154,6 @@ class ModelWindow : public QWidget
                     *grid,
                     *frame,
                     *legend;
-        QPushButton *resetView;
 
         QLineEdit *binWidthLineEdit;
         QSlider *binWidthSlider;

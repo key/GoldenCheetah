@@ -9,19 +9,13 @@
 //
 //-----------------------------------------------------------------
 
-int main (int argc, char **argv)
+int main ( int argc, char **argv )
 {
-    QApplication a(argc, argv);
+    QApplication a( argc, argv );
 
     QTabWidget tabWidget;
-#if QT_VERSION < 0x040000
-    tabWidget.addTab(new CompassGrid(&tabWidget), "Compass");
-    tabWidget.addTab(new CockpitGrid(&tabWidget), "Cockpit");
-    a.setMainWidget(&tabWidget);
-#else
-    tabWidget.addTab(new CompassGrid, "Compass");
-    tabWidget.addTab(new CockpitGrid, "Cockpit");
-#endif
+    tabWidget.addTab( new CompassGrid, "Compass" );
+    tabWidget.addTab( new CockpitGrid, "Cockpit" );
 
     tabWidget.show();
 

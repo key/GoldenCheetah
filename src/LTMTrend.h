@@ -18,16 +18,18 @@
 
 #ifndef _GC_LTMTrend_h
 #define _GC_LTMTrend_h 1
+#include "GoldenCheetah.h"
 
 class LTMTrend
 {
     public:
         // Constructor using arrays of x values and y values
         LTMTrend(double *, double *, int);
-
-        void addXY(double&, double&);
-
         double getYforX(double x) const { return (a + b * x); }
+        double intercept() { return a; }
+        double slope() { return b; }
+
+        double minX, maxX, minY, maxY; // for the data set we have
 
     protected:
         long points;
@@ -37,7 +39,6 @@ class LTMTrend
         double sumXY;
         double a, b;   // a = intercept, b = slope
 
-        void calc();   // calculate coefficients
 };
 
 #endif

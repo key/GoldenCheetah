@@ -9,14 +9,10 @@
 
 // vim: expandtab
 
-#include <qglobal.h>
-#if QT_VERSION >= 0x040000
-
 #include <qstring.h>
 #include <qpainter.h>
 #include "qwt_mathml_text_engine.h"
-
-#include <qtmmlwidget.h>
+#include "qwt_mml_document.h"
 
 //! Constructor
 QwtMathMLTextEngine::QwtMathMLTextEngine()
@@ -38,10 +34,10 @@ QwtMathMLTextEngine::~QwtMathMLTextEngine()
 
    \return Calculated height
 */
-int QwtMathMLTextEngine::heightForWidth(const QFont& font, int flags,
-        const QString& text, int) const
+double QwtMathMLTextEngine::heightForWidth( const QFont& font, int flags,
+        const QString& text, double ) const
 {
-    return textSize(font, flags, text).height();
+    return textSize( font, flags, text ).height();
 }
 
 /*!
@@ -53,17 +49,19 @@ int QwtMathMLTextEngine::heightForWidth(const QFont& font, int flags,
 
   \return Caluclated size
 */
-QSize QwtMathMLTextEngine::textSize(const QFont &font,
-    int, const QString& text) const
+QSizeF QwtMathMLTextEngine::textSize( const QFont &font,
+    int flags, const QString& text ) const
 {
+    Q_UNUSED( flags );
+
     static QString t;
     static QSize sz;
 
     if ( text != t )
     {
-        QtMmlDocument doc;
-        doc.setContent(text);
-        doc.setBaseFontPointSize(font.pointSize());
+        QwtMathMLDocument doc;
+        doc.setContent( text );
+        doc.setBaseFontPointSize( font.pointSize() );
 
         sz = doc.size();
         t = text;
@@ -80,8 +78,8 @@ QSize QwtMathMLTextEngine::textSize(const QFont &font,
   \param top Return 0
   \param bottom Return 0
 */
-void QwtMathMLTextEngine::textMargins(const QFont &, const QString &,
-    int &left, int &right, int &top, int &bottom) const
+void QwtMathMLTextEngine::textMargins( const QFont &, const QString &,
+    double &left, double &right, double &top, double &bottom ) const
 {
     left = right = top = bottom = 0;
 }
@@ -90,36 +88,36 @@ void QwtMathMLTextEngine::textMargins(const QFont &, const QString &,
    Draw the text in a clipping rectangle
 
    \param painter Painter
-   \param rect Clipping rectangle 
+   \param rect Clipping rectangle
    \param flags Bitwise OR of the flags like in for QPainter::drawText
    \param text Text to be rendered
-*/ 
-void QwtMathMLTextEngine::draw(QPainter *painter, const QRect &rect,
-    int flags, const QString& text) const
+*/
+void QwtMathMLTextEngine::draw( QPainter *painter, const QRectF &rect,
+    int flags, const QString& text ) const
 {
-    QtMmlDocument doc;
-    doc.setContent(text);
-    doc.setBaseFontPointSize(painter->font().pointSize());
+    QwtMathMLDocument doc;
+    doc.setContent( text );
+    doc.setBaseFontPointSize( painter->font().pointSize() );
 
-    const QSize docSize = doc.size();
+    const QSizeF docSize = doc.size();
 
-    QPoint pos = rect.topLeft();
+    QPointF pos = rect.topLeft();
     if ( rect.width() > docSize.width() )
     {
         if ( flags & Qt::AlignRight )
-            pos.setX(rect.right() - docSize.width());
+            pos.setX( rect.right() - docSize.width() );
         if ( flags & Qt::AlignHCenter )
-            pos.setX(rect.center().x() - docSize.width() / 2);
+            pos.setX( rect.center().x() - docSize.width() / 2 );
     }
     if ( rect.height() > docSize.height() )
     {
         if ( flags & Qt::AlignBottom )
-            pos.setY(rect.bottom() - docSize.height());
+            pos.setY( rect.bottom() - docSize.height() );
         if ( flags & Qt::AlignVCenter )
-            pos.setY(rect.center().y() - docSize.height() / 2);
+            pos.setY( rect.center().y() - docSize.height() / 2 );
     }
 
-    doc.paint(painter, pos);
+    doc.paint( painter, pos.toPoint() );
 }
 
 /*!
@@ -128,9 +126,7 @@ void QwtMathMLTextEngine::draw(QPainter *painter, const QRect &rect,
   \param text Text to be tested
   \return true, if text begins with "<math>".
 */
-bool QwtMathMLTextEngine::mightRender(const QString &text) const
+bool QwtMathMLTextEngine::mightRender( const QString &text ) const
 {
-    return text.trimmed().startsWith("<math");
+    return text.trimmed().startsWith( "<math" );
 }
-
-#endif // QT_VERSION < 0x040000

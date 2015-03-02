@@ -1,16 +1,16 @@
-/* 
+/*
  * Copyright (c) 2009 Eric Murray (ericm@lne.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -22,17 +22,16 @@
 #include <QRegExp>
 #include <QTextStream>
 #include <algorithm> // for std::sort
-#include <assert.h>
-#include "math.h"
+#include "cmath"
 
-static int manualFileReaderRegistered = 
-    RideFileFactory::instance().registerReader("man", "Manual Ride File", new ManualFileReader());
- 
-RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const 
+static int manualFileReaderRegistered =
+    RideFileFactory::instance().registerReader("man", "Manual File", new ManualFileReader());
+
+RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const
 {
     QRegExp metricUnits("(km|kph|km/h)", Qt::CaseInsensitive);
     QRegExp englishUnits("(miles|mph|mp/h)", Qt::CaseInsensitive);
-    bool metric;
+    bool metric = false;
 
     int unitsHeader = 2;
 
@@ -43,12 +42,11 @@ RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const
      *	minutes,mph,watts,miles,hr,bikeScore    # data
      */
     QRegExp manualCSV("manual", Qt::CaseInsensitive);
-    bool manual = false;
 
-    double rideSec;
+    double rideSec = 0;
 
     if (!file.open(QFile::ReadOnly)) {
-	errors << ("Could not open ride file: \"" 
+	errors << (tr("Could not open ride file: \"")
 		+ file.fileName() + "\"");
 	return NULL;
     }
@@ -68,13 +66,13 @@ RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const
 	    lineno++;
 	    continue;
 	}
-	for (int li = 0; li < lines.size(); ++li) { 
+	for (int li = 0; li < lines.size(); ++li) {
 	    QString line = lines[li];
 
 	    if (lineno == 1) {
 		if (manualCSV.indexIn(line) != -1) {
-		    manual = true;
-		    rideFile->setDeviceType("Manual CSV");
+            rideFile->setDeviceType("Manual");
+            rideFile->setFileFormat("Manual CSV (csv)");
 		    ++lineno;
 		    continue;
 		}
@@ -82,10 +80,10 @@ RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const
 	    else if (lineno == unitsHeader) {
 		if (metricUnits.indexIn(line) != -1)
 		    metric = true;
-		else if (englishUnits.indexIn(line) != -1) 
+		else if (englishUnits.indexIn(line) != -1)
 		    metric = false;
 		else {
-		    errors << ("Can't find units in first line: \"" + line + "\"");
+		    errors << (tr("Can't find units in first line: \"") + line + "\"");
 		    delete rideFile;
 		    file.close();
 		    return NULL;
@@ -96,9 +94,9 @@ RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const
 	    }
 	    // minutes,kph,watts,km,hr,bikeScore
 	    else if (lineno > unitsHeader) {
-		double minutes,kph,watts,km,hr,alt,bs;
-		double cad, nm;
-		int interval;
+		double minutes=0,kph=0,watts=0,km=0,hr=0,alt=0,bs=0;
+		double cad=0, nm=0;
+		int interval=0;
                 QStringList fields = line.split(",");
                 minutes = fields[0].toDouble();
                 kph = fields[1].toDouble();
@@ -118,14 +116,23 @@ RideFile *ManualFileReader::openRideFile(QFile &file, QStringList &errors) const
                         rideFile->metricOverrides.insert(columnNames[i], map);
                     }
                     else {
-                        errors << QObject::tr("Unknown ride metric \"%1\".").arg(columnNames[i]);
+                        errors << tr("Unknown ride metric \"%1\".").arg(columnNames[i]);
                     }
                 }
 		cad = nm = 0.0;
 		interval = 0;
 
 		rideFile->appendPoint(minutes * 60.0, cad, hr, km,
-                                      kph, nm, watts, alt, 0.0, 0.0, 0.0, interval);
+                                      kph, nm, watts, alt,
+                                      0.0, 0.0, 0.0, 0.0,
+                                      RideFile::NoTemp, 0.0, 
+                                      0.0, 0.0, 0.0, 0.0,
+                                      0.0, 0.0, // pedal platform offset
+                                      0.0, 0.0, 0.0, 0.0, //pedal power phase
+                                      0.0, 0.0, 0.0, 0.0, //pedal peak power phase
+                                      0.0, 0.0,
+                                      0.0, 0.0, 0.0, // running dynamics
+                                      interval);
                 QMap<QString,QString> bsm;
                 bsm.insert("value", QString("%1").arg(bs));
                 rideFile->metricOverrides.insert("skiba_bike_score", bsm);

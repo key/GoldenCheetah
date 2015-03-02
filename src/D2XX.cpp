@@ -1,16 +1,16 @@
-/* 
+/*
  * Copyright (c) 2008 Sean C. Rhea (srhea@srhea.net)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -95,27 +95,32 @@ static D2XXWrapper *lib; // singleton lib instance
 bool D2XXRegistered = CommPort::addListFunction(&D2XX::myListCommPorts);
 
 D2XX::D2XX(const FT_DEVICE_LIST_INFO_NODE &info) :
-    info(info), isOpen(false)
+    CommPort( "D2XX" ), info(info), _isOpen(false)
 {
 }
 
 D2XX::~D2XX()
 {
-    if (isOpen)
+    if (_isOpen)
         close();
+}
+
+bool
+D2XX::isOpen()
+{
+    return _isOpen;
 }
 
 bool
 D2XX::open(QString &err)
 {
-    assert(!isOpen);
     FT_STATUS ftStatus =
         lib->open_ex(info.Description, FT_OPEN_BY_DESCRIPTION, &ftHandle);
     if (ftStatus != FT_OK) {
         err = QString("FT_Open: %1").arg(ftStatus);
         return false;
     }
-    isOpen = true;
+    _isOpen = true;
     ftStatus = lib->set_baud_rate(ftHandle, 9600);
     if (ftStatus != FT_OK) {
         err = QString("FT_SetBaudRate: %1").arg(ftStatus);
@@ -142,15 +147,13 @@ D2XX::open(QString &err)
 void
 D2XX::close()
 {
-    assert(isOpen);
-    lib->close(ftHandle); 
-    isOpen = false;
+    lib->close(ftHandle);
+    _isOpen = false;
 }
 
 int
 D2XX::read(void *buf, size_t nbyte, QString &err)
 {
-    assert(isOpen);
     DWORD rxbytes;
     FT_STATUS ftStatus = lib->get_queue_status(ftHandle, &rxbytes);
     if (ftStatus != FT_OK) {
@@ -174,7 +177,6 @@ D2XX::read(void *buf, size_t nbyte, QString &err)
 int
 D2XX::write(void *buf, size_t nbyte, QString &err)
 {
-    assert(isOpen);
     DWORD n;
     FT_STATUS ftStatus = lib->write(ftHandle, buf, nbyte, &n);
     if (ftStatus == FT_OK)
@@ -186,7 +188,19 @@ D2XX::write(void *buf, size_t nbyte, QString &err)
 QString
 D2XX::name() const
 {
-    return QString("D2XX: ") + info.Description;
+    return info.Description;
+}
+
+bool
+D2XX::setBaudRate(int speed, QString &err)
+{
+    FT_STATUS ftStatus = lib->set_baud_rate(ftHandle, speed);
+    if (ftStatus != FT_OK) {
+        err = QString("FT_SetBaudRate: %1").arg(ftStatus);
+        return false;
+    }
+
+    return true;
 }
 
 QVector<CommPortPtr>
@@ -202,15 +216,15 @@ D2XX::myListCommPorts(QString &err)
         }
     }
     DWORD numDevs;
-    FT_STATUS ftStatus = lib->create_device_info_list(&numDevs); 
+    FT_STATUS ftStatus = lib->create_device_info_list(&numDevs);
     if(ftStatus != FT_OK) {
-        err = QString("FT_CreateDeviceInfoList: %1").arg(ftStatus); 
+        err = QString("FT_CreateDeviceInfoList: %1").arg(ftStatus);
         return result;
     }
     FT_DEVICE_LIST_INFO_NODE *devInfo = new FT_DEVICE_LIST_INFO_NODE[numDevs];
-    ftStatus = lib->get_device_info_list(devInfo, &numDevs); 
+    ftStatus = lib->get_device_info_list(devInfo, &numDevs);
     if (ftStatus != FT_OK)
-        err = QString("FT_GetDeviceInfoList: %1").arg(ftStatus); 
+        err = QString("FT_GetDeviceInfoList: %1").arg(ftStatus);
     else {
         for (DWORD i = 0; i < numDevs; i++)
             result.append(CommPortPtr(new D2XX(devInfo[i])));

@@ -19,20 +19,24 @@
 #include "DataProcessor.h"
 #include "Settings.h"
 #include "Units.h"
+#include "HelpWhatsThis.h"
 #include <algorithm>
 #include <QVector>
-
-#define tr(s) QObject::tr(s)
 
 // Config widget used by the Preferences/Options config panes
 class FixGPS;
 class FixGPSConfig : public DataProcessorConfig
 {
+    Q_DECLARE_TR_FUNCTIONS(FixGPSConfig)
     friend class ::FixGPS;
     protected:
     public:
         // there is no config
-        FixGPSConfig(QWidget *parent) : DataProcessorConfig(parent) {}
+        FixGPSConfig(QWidget *parent) : DataProcessorConfig(parent) {
+
+            HelpWhatsThis *help = new HelpWhatsThis(parent);
+            parent->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::MenuBar_Edit_FixGPSErrors));
+        }
 
         QString explain() {
             return(QString(tr("Remove GPS errors and interpolate positional "
@@ -50,6 +54,7 @@ class FixGPSConfig : public DataProcessorConfig
 //                           to ensure dataPoints are contiguous in time
 //
 class FixGPS : public DataProcessor {
+    Q_DECLARE_TR_FUNCTIONS(FixGPS)
 
     public:
         FixGPS() {}
@@ -62,9 +67,14 @@ class FixGPS : public DataProcessor {
         DataProcessorConfig* processorConfig(QWidget *parent) {
             return new FixGPSConfig(parent);
         }
+
+        // Localized Name
+        QString name() {
+            return (tr("Fix GPS errors"));
+        }
 };
 
-static bool fixGPSAdded = DataProcessorFactory::instance().registerProcessor(QString(tr("Fix GPS errors")), new FixGPS());
+static bool fixGPSAdded = DataProcessorFactory::instance().registerProcessor(QString("Fix GPS errors"), new FixGPS());
 
 bool
 FixGPS::postProcess(RideFile *ride, DataProcessorConfig *)
@@ -113,10 +123,7 @@ FixGPS::postProcess(RideFile *ride, DataProcessorConfig *)
             ride->command->setPointValue(j, RideFile::lon, ride->dataPoints()[lastgood]->lon);
             errors++;
         }
-    } else {
-        // they are all bad!!
-        // XXX do nothing?
-    }
+    } 
     ride->command->endLUW();
 
     if (errors) {

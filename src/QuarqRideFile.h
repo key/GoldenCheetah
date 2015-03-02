@@ -18,6 +18,7 @@
 
 #ifndef _QuarqRideFile_h
 #define _QuarqRideFile_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 #include <QProcess>
@@ -25,7 +26,8 @@
 bool quarqInterpreterInstalled( void );
 
 struct QuarqFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const; 
+    bool hasWrite() const { return false; }
 };
 
 #endif // _QuarqRideFile_h

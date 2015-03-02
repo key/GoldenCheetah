@@ -16,14 +16,25 @@
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
-
 #include "RideEditor.h"
 #include "LTMOutliers.h"
+#include "IntervalItem.h"
+#include "Athlete.h"
 #include "MainWindow.h"
+#include "Context.h"
 #include "Settings.h"
+#include "Colors.h"
+#include "TabView.h"
+#include "HelpWhatsThis.h"
 
 #include <QtGui>
 #include <QString>
+#include <QStyle>
+#include <QStyleFactory>
+#include <QScrollBar>
+
+// for strtod
+#include <stdlib.h>
 
 // used to make a lookup string for row/col anomalies
 static QString xsstring(int x, RideFile::SeriesType series)
@@ -51,9 +62,14 @@ static void secsMsecs(double value, int &secs, int &msecs)
     msecs = round((value - secs) * 100) * 10;
 }
 
-RideEditor::RideEditor(MainWindow *main) : QWidget(main), data(NULL), ride(NULL), main(main), inLUW(false), colMapper(NULL)
+RideEditor::RideEditor(Context *context) : GcChartWindow(context), data(NULL), ride(NULL), context(context), inLUW(false), colMapper(NULL)
 {
-    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    setControls(NULL);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout;
+    mainLayout->setSpacing(0);
+    mainLayout->setContentsMargins(2,0,2,2);
+    setChartLayout(mainLayout);
 
     //Left in the code to display a title, but
     //its a waste of screen estate, maybe uncomment
@@ -69,27 +85,16 @@ RideEditor::RideEditor(MainWindow *main) : QWidget(main), data(NULL), ride(NULL)
     toolbar = new QToolBar(this);
     toolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     toolbar->setFloatable(true);
+    toolbar->setIconSize(QSize(18,18));
 
     QIcon saveIcon(":images/toolbar/save.png");
     saveAct = new QAction(saveIcon, tr("Save"), this);
     connect(saveAct, SIGNAL(triggered()), this, SLOT(saveFile()));
     toolbar->addAction(saveAct);
 
-    QIcon findIcon(":images/toolbar/search.png");
-    searchAct = new QAction(findIcon, tr("Find"), this);
-    connect(searchAct, SIGNAL(triggered()), this, SLOT(find()));
-    toolbar->addAction(searchAct);
-
-    // *****************************************************
-    // REMOVED MANUALLY RUNNING A CHECK SINCE IT IS NOW
-    // PRETTY EFFICIENT AND UPDATES AUTOMATICALLY WHEN
-    // A COMMAND COMPLETES. IF THIS BECOMES TOO MUCH OF A
-    // PERFORMANCE OVERHEAD THEN WE CAN RE-ADD THIS
-    // *****************************************************
-    //QIcon checkIcon(":images/toolbar/splash green.png");
-    //checkAct = new QAction(checkIcon, tr("Check"), this);
-    //connect(checkAct, SIGNAL(triggered()), this, SLOT(check()));
-    //toolbar->addAction(checkAct);
+    toolbar->addSeparator();
+    HelpWhatsThis *helpToolbar = new HelpWhatsThis(toolbar);
+    toolbar->setWhatsThis(helpToolbar->getWhatsThisText(HelpWhatsThis::ChartRides_Editor));
 
     // undo and redo deliberately at a distance from the
     // save icon, since accidentally hitting the wrong
@@ -103,12 +108,29 @@ RideEditor::RideEditor(MainWindow *main) : QWidget(main), data(NULL), ride(NULL)
     redoAct = new QAction(redoIcon, tr("Redo"), this);
     connect(redoAct, SIGNAL(triggered()), this, SLOT(redo()));
     toolbar->addAction(redoAct);
+    
+    toolbar->addSeparator();
+
+    QIcon findIcon(":images/toolbar/search.png");
+    searchAct = new QAction(findIcon, tr("Find"), this);
+    connect(searchAct, SIGNAL(triggered()), this, SLOT(find()));
+    toolbar->addAction(searchAct);
+
+    QIcon checkIcon(":images/toolbar/splash green.png");
+    checkAct = new QAction(checkIcon, tr("Anomalies"), this);
+    connect(checkAct, SIGNAL(triggered()), this, SLOT(anomalies()));
+    toolbar->addAction(checkAct);
 
     // empty model
     model = new RideFileTableModel(NULL);
 
     // set up the table
     table = new QTableView();
+#ifdef Q_OS_WIN
+    QStyle *cde = QStyleFactory::create(OS_STYLE);
+    table->verticalScrollBar()->setStyle(cde);
+    table->horizontalScrollBar()->setStyle(cde);
+#endif
     table->setItemDelegate(new CellDelegate(this));
     table->verticalHeader()->setDefaultSectionSize(20);
     table->setModel(model);
@@ -116,10 +138,11 @@ RideEditor::RideEditor(MainWindow *main) : QWidget(main), data(NULL), ride(NULL)
     table->setSelectionMode(QAbstractItemView::ContiguousSelection);
     table->installEventFilter(this);
 
+    HelpWhatsThis *helpTable = new HelpWhatsThis(table);
+    table->setWhatsThis(helpTable->getWhatsThisText(HelpWhatsThis::ChartRides_Editor));
+
     // prettify (and make anomalies more visible)
-    QPen gridStyle;
-    gridStyle.setColor(Qt::lightGray);
-    table->setGridStyle(Qt::DotLine);
+    table->setGridStyle(Qt::NoPen);
 
     connect(table, SIGNAL(customContextMenuRequested(const QPoint&)), this, SLOT(cellMenu(const QPoint&)));
 
@@ -128,32 +151,61 @@ RideEditor::RideEditor(MainWindow *main) : QWidget(main), data(NULL), ride(NULL)
     mainLayout->addWidget(toolbar);
     mainLayout->addWidget(table);
 
-    // get latest config
-    configChanged();
-
     // trap GC signals
-    connect(main, SIGNAL(configChanged()), this, SLOT(configChanged()));
-    connect(main, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
-    connect(main, SIGNAL(rideSelected()), this, SLOT(rideSelected()));
-    connect(main, SIGNAL(rideDirty()), this, SLOT(rideDirty()));
-    connect(main, SIGNAL(rideClean()), this, SLOT(rideClean()));
+    connect(context, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
+    //connect(main, SIGNAL(rideSelected()), this, SLOT(rideSelected()));
+    connect(this, SIGNAL(rideItemChanged(RideItem*)), this, SLOT(rideSelected()));
+    connect(context, SIGNAL(rideDirty(RideItem*)), this, SLOT(rideDirty()));
+    connect(context, SIGNAL(rideClean(RideItem*)), this, SLOT(rideClean()));
+    connect(context, SIGNAL(configChanged(qint32)), this, SLOT(configChanged(qint32)));
+
+    // put find tool and anomaly list in the controls
+    findTool = new FindDialog(this);
+    findTool->hide();
+    anomalyTool = new AnomalyDialog(this);
+    anomalyTool->hide();
+
+    // allow us to jump to an anomaly
+    connect(anomalyTool->anomalyList, SIGNAL(itemSelectionChanged()), this, SLOT(anomalySelected()));
+
+    // set initial color config
+    configChanged(CONFIG_APPEARANCE);
 }
 
 void
-RideEditor::configChanged()
+RideEditor::configChanged(qint32) 
 {
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
+    setProperty("color", GColor(CPLOTBACKGROUND));
 
-    // get spike config
-    DPFSmax = settings->value(GC_DPFS_MAX, "1500").toDouble();
-    DPFSvariance = settings->value(GC_DPFS_VARIANCE, "1000").toDouble();
+    QPalette palette;
+    palette.setBrush(QPalette::Window, QBrush(GColor(CPLOTBACKGROUND)));
+    palette.setBrush(QPalette::Background, QBrush(GColor(CPLOTBACKGROUND)));
+    palette.setBrush(QPalette::Base, QBrush(GColor(CPLOTBACKGROUND)));
+    palette.setColor(QPalette::WindowText, GCColor::invertColor(GColor(CPLOTBACKGROUND)));
+    palette.setColor(QPalette::Text, GCColor::invertColor(GColor(CPLOTBACKGROUND)));
+    palette.setColor(QPalette::Normal, QPalette::Window, GCColor::invertColor(GColor(CPLOTBACKGROUND)));
+    setPalette(palette);
+    table->setPalette(palette);
+    table->setStyleSheet(QString("QTableView QTableCornerButton::section { background-color: %1; color: %2; border: %1 }")
+                    .arg(GColor(CPLOTBACKGROUND).name())
+                    .arg(GCColor::invertColor(GColor(CPLOTBACKGROUND)).name()));
+    table->horizontalHeader()->setStyleSheet(QString("QHeaderView::section { background-color: %1; color: %2; border: 0px }")
+                    .arg(GColor(CPLOTBACKGROUND).name())
+                    .arg(GCColor::invertColor(GColor(CPLOTBACKGROUND)).name()));
+    table->verticalHeader()->setStyleSheet(QString("QHeaderView::section { background-color: %1; color: %2; border: 0px }")
+                    .arg(GColor(CPLOTBACKGROUND).name())
+                    .arg(GCColor::invertColor(GColor(CPLOTBACKGROUND)).name()));
+#ifndef Q_OS_MAC
+    table->verticalScrollBar()->setStyleSheet(TabView::ourStyleSheet());
+    table->horizontalScrollBar()->setStyleSheet(TabView::ourStyleSheet());
+#endif
+    toolbar->setStyleSheet(QString("::enabled { background: %1; color: %2; border: 0px; } ").arg(GColor(CPLOTBACKGROUND).name())
+                    .arg(GCColor::invertColor(GColor(CPLOTBACKGROUND)).name()));
 }
-
 
 //----------------------------------------------------------------------
 // RideEditor table/model/rideFile utility functions
 //----------------------------------------------------------------------
-
 
 // what are the available columns? (used by insert column context menu)
 QList<QString>
@@ -172,6 +224,28 @@ RideEditor::whatColumns()
          << tr("Latitude")
          << tr("Longitude")
          << tr("Headwind")
+         << tr("Slope")
+         << tr("Temperature")
+         << tr("Left/Right Balance")
+         << tr("Left TE")
+         << tr("Right TE")
+         << tr("Left PS")
+         << tr("Right PS")
+         << tr("Left Platform Center Offset")
+         << tr("Right Platform Center Offset")
+         << tr("Left Power Phase Start")
+         << tr("Left Power Phase End")
+         << tr("Right Power Phase Start")
+         << tr("Right Power Phase End")
+         << tr("Left Peak Power Phase Start")
+         << tr("Left Peak Power Phase End")
+         << tr("Right Peak Power Phase Start")
+         << tr("Right Peak Power Phase End")
+         << tr("SmO2")
+         << tr("tHb")
+         << tr("Vertical Oscillation")
+         << tr("Run Cadence")
+         << tr("GCT")
          << tr("Interval");
 
     return what;
@@ -261,48 +335,68 @@ RideEditor::isColumnSelected()
 void
 RideEditor::saveFile()
 {
-    if (ride->isDirty()) {
-        main->saveRideSingleDialog(ride);
+    if (ride && ride->isDirty()) {
+        context->mainWindow->saveRideSingleDialog(context, ride);
     }
 }
 
 void
 RideEditor::undo()
 {
-    ride->ride()->command->undoCommand();
+    if (ride && ride->ride() && ride->ride()->command)
+        ride->ride()->command->undoCommand();
 }
 
 void
 RideEditor::redo()
 {
-    ride->ride()->command->redoCommand();
+    if (ride && ride->ride() && ride->ride()->command)
+        ride->ride()->command->redoCommand();
+}
+
+void
+RideEditor::hideEvent(QHideEvent *)
+{
+    findTool->hide();
+    anomalyTool->hide();
 }
 
 void
 RideEditor::find()
 {
-    // look for a value in a range and allow user to next/previous across
-    //RideEditorFindDialog finder(this, table);
-    //finder.exec();
-    FindDialog *finder = new FindDialog(this);
-
-    // close when a new ride is selected
-    connect(main, SIGNAL(rideSelected()), finder, SLOT(close()));
-    finder->show();
+    // find only valid if we have data points to search across
+    if (ride && ride->ride() && ride->ride()->dataPoints().count())
+        findTool->show();
 }
 
 void
-RideEditor::check()
+RideEditor::anomalies()
+{
+    // show anomalies list .. hidden when tab changed or ride selected
+    if (ride && ride->ride() && ride->ride()->dataPoints().count())
+        anomalyTool->show();
+    
+}
+
+void
+AnomalyDialog::check()
 {
     // run through all the available channels and find anomalies
-    data->anomalies.clear();
+    rideEditor->data->anomalies.clear();
+
+    // clear the list
+    anomalyList->clear();
+    //QStringList header;
+    //header << "Id" << "Anomalies";
+    //anomalyList->setHorizontalHeaderLabels(header);
+    anomalyList->horizontalHeader()->hide();
 
     QVector<double> power;
     QVector<double> secs;
-    double lastdistance;
+    double lastdistance=9;
     int count = 0;
 
-    foreach (RideFilePoint *point, ride->ride()->dataPoints()) {
+    foreach (RideFilePoint *point, rideEditor->ride->ride()->dataPoints()) {
         power.append(point->watts);
         secs.append(point->secs);
 
@@ -311,15 +405,15 @@ RideEditor::check()
             // whilst we are here we might as well check for gaps in recording
             // anything bigger than a second is of a material concern
             // and we assume time always flows forward ;-)
-            double diff = secs[count] - (secs[count-1] + ride->ride()->recIntSecs());
+            double diff = secs[count] - (secs[count-1] + rideEditor->ride->ride()->recIntSecs());
             if (diff > (double)1.0 || diff < (double)-1.0 || secs[count] < secs[count-1]) {
-                data->anomalies.insert(xsstring(count, RideFile::secs),
+                rideEditor->data->anomalies.insert(xsstring(count, RideFile::secs),
                                        tr("Invalid recording gap"));
             }
 
             // and on the same theme what about distance going backwards?
             if (point->km < lastdistance)
-                data->anomalies.insert(xsstring(count, RideFile::km),
+                rideEditor->data->anomalies.insert(xsstring(count, RideFile::km),
                                        tr("Distance goes backwards."));
 
         }
@@ -327,27 +421,27 @@ RideEditor::check()
 
         // suspicious values
         if (point->cad > 150) {
-            data->anomalies.insert(xsstring(count, RideFile::cad),
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::cad),
                                    tr("Suspiciously high cadence"));
         }
         if (point->hr > 200) {
-            data->anomalies.insert(xsstring(count, RideFile::hr),
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::hr),
                                    tr("Suspiciously high heartrate"));
         }
         if (point->kph > 100) {
-            data->anomalies.insert(xsstring(count, RideFile::kph),
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::kph),
                                    tr("Suspiciously high speed"));
         }
         if (point->lat > 90 || point->lat < -90) {
-            data->anomalies.insert(xsstring(count, RideFile::lat),
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::lat),
                                    tr("Out of bounds value"));
         }
         if (point->lon > 180 || point->lon < -180) {
-            data->anomalies.insert(xsstring(count, RideFile::lon),
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::lon),
                                    tr("Out of bounds value"));
         }
-        if (ride->ride()->areDataPresent()->cad && point->nm && !point->cad) {
-            data->anomalies.insert(xsstring(count, RideFile::nm),
+        if (rideEditor->ride->ride()->areDataPresent()->cad && point->nm && !point->cad) {
+            rideEditor->data->anomalies.insert(xsstring(count, RideFile::nm),
                                    tr("Non-zero torque but zero cadence"));
 
         }
@@ -355,32 +449,63 @@ RideEditor::check()
     }
 
     // lets look at the Power Column if its there and has enough data
-    int column = model->headings().indexOf(tr("Power"));
-    if (column >= 0 && ride->ride()->dataPoints().count() >= 30) {
+    int column = rideEditor->model->headings().indexOf(tr("Power"));
+    if (column >= 0 && rideEditor->ride->ride()->dataPoints().count() >= 30) {
 
+        // get spike config
+        double max = appsettings->value(this, GC_DPFS_MAX, "1500").toDouble();
+        double variance = appsettings->value(this, GC_DPFS_VARIANCE, "1000").toDouble();
 
-        LTMOutliers *outliers = new LTMOutliers(secs.data(), power.data(), power.count(), 30, false);
+        LTMOutliers outliers(secs.data(), power.data(), power.count(), 30, false);
 
         // run through the ranked list
         for (int i=0; i<secs.count(); i++) {
 
             // is this over variance threshold?
-            if (outliers->getDeviationForRank(i) < DPFSvariance) break;
+            if (outliers.getDeviationForRank(i) < variance) break;
 
             // ok, so its highly variant but is it over
             // the max value we are willing to accept?
-            if (outliers->getYForRank(i) < DPFSmax) continue;
+            if (outliers.getYForRank(i) < max) continue;
 
             // which one is it
-            data->anomalies.insert(xsstring(outliers->getIndexForRank(i), RideFile::watts), tr("Data spike candidate"));
+            rideEditor->data->anomalies.insert(xsstring(outliers.getIndexForRank(i), RideFile::watts), tr("Data spike candidate"));
         }
     }
 
+    // now fill in the anomaly list
+    anomalyList->setRowCount(0); // <<< fixes crash at ZZZZ
+    anomalyList->setRowCount(rideEditor->data->anomalies.count()); // <<< ZZZZ
+
+    int counter = 0;
+    QMapIterator<QString,QString> f(rideEditor->data->anomalies);
+    while (f.hasNext()) {
+
+        f.next();
+
+        QTableWidgetItem *t = new QTableWidgetItem;
+        t->setText(f.key());
+        t->setFlags(t->flags() & (~Qt::ItemIsEditable));
+        anomalyList->setItem(counter, 0, t);
+
+        t = new QTableWidgetItem;
+        t->setText(f.value());
+        t->setFlags(t->flags() & (~Qt::ItemIsEditable));
+        t->setForeground(QBrush(Qt::red));
+        anomalyList->setItem(counter, 1, t);
+
+        counter++;
+    }
+
+    // enable the toolbar / disable for anomalies found
+    if (counter) rideEditor->checkAct->setEnabled(true);
+    else rideEditor->checkAct->setEnabled(false);
+
     // redraw - even if no anomalies were found since
-    // some may have been highlighted previouslt. This is
+    // some may have been highlighted previously. This is
     // an expensive operation, but then so is the check()
     // function.
-    model->forceRedraw();
+    rideEditor->model->forceRedraw();
 }
 
 //----------------------------------------------------------------------
@@ -392,11 +517,12 @@ RideEditor::eventFilter(QObject *object, QEvent *e)
     // not for the table?
     if (object != (QObject *)table) return false;
 
-    // what happenned?
+    // what happened?
     switch(e->type())
     {
         case QEvent::ContextMenu:
-            borderMenu(((QMouseEvent *)e)->pos());
+            // borderMenu(((QMouseEvent *)e)->pos());
+            borderMenu(table->mapFromGlobal(QCursor::pos()));
             return true; // I'll take that thanks
             break;
 
@@ -533,7 +659,7 @@ void
 RideEditor::borderMenu(const QPoint &pos)
 {
 
-    int column, row;
+    int column=0, row=0;
 
     // but we need to set the row or column to zero since
     // we are in the border, this seems an easy and quick way
@@ -620,9 +746,9 @@ RideEditor::copy()
 
             for (int column = selection[0].column();  column <= selection[selection.count()-1].column(); column++) {
                 if (column == selection[selection.count()-1].column())
-                    text += QString("%1").arg(getValue(row,column));
+                    text += QString("%1").arg(getValue(row,column), 0, 'g', 11);
                 else
-                    text += QString("%1\t").arg(getValue(row,column));
+                    text += QString("%1\t").arg(getValue(row,column), 0, 'g', 11);
             }
             text += "\n";
         }
@@ -648,12 +774,9 @@ void
 RideEditor::delRow()
 {
     // run through the selected rows and zap them
-    bool changed = false;
     QList<QModelIndex> selection = table->selectionModel()->selection().indexes();
 
     if (selection.count() > 0) {
-
-        changed = true;
 
         // delete from table - we do in one hit since row-by-row is VERY slow
         ride->ride()->command->startLUW("Delete Rows");
@@ -668,12 +791,9 @@ void
 RideEditor::delColumn()
 {
     // run through the selected columns and "zap" them
-    bool changed = false;
     QList<QModelIndex> selection = table->selectionModel()->selection().indexes();
 
     if (selection.count() > 0) {
-
-        changed = true;
 
         // Delete each column by its SeriesType
         ride->ride()->command->startLUW("Delete Columns");
@@ -710,6 +830,28 @@ RideEditor::insColumn(QString name)
     if (name == tr("Headwind")) series = RideFile::headwind;
     if (name == tr("Interval")) series = RideFile::interval;
     if (name == tr("Heartrate")) series = RideFile::hr;
+    if (name == tr("Slope")) series = RideFile::slope;
+    if (name == tr("Temperature")) series = RideFile::temp;
+    if (name == tr("Left/Right Balance")) series = RideFile::lrbalance;
+    if (name == tr("Left TE")) series = RideFile::lte;
+    if (name == tr("Right TE")) series = RideFile::rte;
+    if (name == tr("Left PS")) series = RideFile::lps;
+    if (name == tr("Right PS")) series = RideFile::rps;  
+    if (name == tr("Left Platform Center Offset")) series = RideFile::lpco;
+    if (name == tr("Right Platform Center Offset")) series = RideFile::rpco;
+    if (name == tr("Left Power Phase Start")) series = RideFile::lppb;
+    if (name == tr("Right Power Phase Start")) series = RideFile::rppb;
+    if (name == tr("Left Power Phase End")) series = RideFile::lppe;
+    if (name == tr("Right Power Phase End")) series = RideFile::rppe;
+    if (name == tr("Left Peak Power Phase Start")) series = RideFile::lpppb;
+    if (name == tr("Right Peak Power Phase Start")) series = RideFile::rpppb;
+    if (name == tr("Left Peak Power Phase End")) series = RideFile::lpppe;
+    if (name == tr("Right Peak Power Phase End")) series = RideFile::rpppe;
+    if (name == tr("SmO2")) series = RideFile::smo2;
+    if (name == tr("tHb")) series = RideFile::thb;
+    if (name == tr("Vertical Oscillation")) series = RideFile::rvert;
+    if (name == tr("Run Cadence")) series = RideFile::rcad;
+    if (name == tr("GCT")) series = RideFile::rcontact;
 
     model->insertColumn(series);
 }
@@ -777,7 +919,7 @@ RideEditor::paste()
     ride->ride()->command->startLUW("Paste Cells");
     for (int i=0; i<cells.count(); i++) {
 
-        // just in case check booundary (i.e. truncate)
+        // just in case check boundary (i.e. truncate)
         if (selectedrow+i > ride->ride()->dataPoints().count()-1) break;
         for(int j=0; j<cells[i].count(); j++) {
 
@@ -805,7 +947,7 @@ RideEditor::getPaste(QVector<QVector<double> >&cells, QStringList &seps, QString
     regexpStr = "[";
     foreach (QString sep, seps) regexpStr += sep;
     regexpStr += "]";
-    QRegExp sep(regexpStr); // RegExp for seperators
+    QRegExp sep(regexpStr); // RegExp for separators
 
     QRegExp ELine(("\n|\r|\r\n")); //RegExp for line endings
 
@@ -820,7 +962,11 @@ RideEditor::getPaste(QVector<QVector<double> >&cells, QStringList &seps, QString
             cells.resize(row+1);
             foreach (QString token, line.split(sep)) {
                 cells[row].resize(col+1);
-                cells[row][col] = token.toDouble();
+
+                // use strtod to get better precision
+                char *p;
+                cells[row][col] = strtod(token.toLatin1(), &p);
+
                 col++;
 
                 // if there are more cols than in the
@@ -857,12 +1003,9 @@ RideEditor::pasteSpecial()
 void
 RideEditor::clear()
 {
-    bool changed = false;
-
     // Set the selected cells to zero
     ride->ride()->command->startLUW("Clear cells");
     foreach (QModelIndex current, table->selectionModel()->selection().indexes()) {
-        changed = true;
         setModelValue(current.row(), current.column(), (double)0.0);
     }
     ride->ride()->command->endLUW();
@@ -973,6 +1116,25 @@ void CellDelegate::setModelData(QWidget *editor, QAbstractItemModel *, const QMo
     }
 }
 
+//custom drawContents class
+class GTextDocument : public QTextDocument
+{
+    public:
+        GTextDocument(QString string) : QTextDocument(string) {}
+
+        // custom draw
+        void drawContents(QPainter *painter, QColor color) {
+
+            painter->save();
+
+            QAbstractTextDocumentLayout::PaintContext ctx;
+            ctx.palette.setColor(QPalette::Text, color);
+            documentLayout()->draw(painter, ctx);
+
+            painter->restore();
+        }
+};
+
 // anomalies are underlined in red, otherwise straight paintjob
 void CellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
                          const QModelIndex &index) const
@@ -1001,7 +1163,7 @@ void CellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
     if (rideEditor->isAnomaly(index.row(), index.column())) {
 
         // wavy line is a pain!
-        QTextDocument *meh = new QTextDocument(QString(value));
+        GTextDocument *meh = new GTextDocument(QString(value));
         QTextCharFormat wavy;
         wavy.setUnderlineStyle(QTextCharFormat::WaveUnderline);
         wavy.setUnderlineColor(Qt::red);
@@ -1018,9 +1180,10 @@ void CellDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
 
         painter->save();
         painter->translate(option.rect.x(), option.rect.y());
-        meh->drawContents(painter);
+        meh->drawContents(painter, GCColor::invertColor(GColor(CPLOTBACKGROUND)));
         painter->restore();
         delete meh;
+
     } else {
 
         // normal render
@@ -1049,15 +1212,13 @@ void
 RideEditor::intervalSelected()
 {
     // is it for the ride item we are editing?
-    if (main->currentRideItem() == ride) {
+    if (ride && context->currentRideItem() == ride) {
 
         // clear all selections
-        table->selectionModel()->select(QItemSelection(model->index(0,0),
-                                                       model->index(ride->ride()->dataPoints().count(),model->columnCount()-1)),
-                                                       QItemSelectionModel::Clear);
+        table->selectionModel()->clear();
 
         // highlight selection and jump to last
-        foreach(QTreeWidgetItem *x, main->allIntervalItems()->treeWidget()->selectedItems()) {
+        foreach(QTreeWidgetItem *x, context->athlete->allIntervalItems()->treeWidget()->selectedItems()) {
 
             IntervalItem *current = (IntervalItem*)x;
 
@@ -1081,8 +1242,18 @@ RideEditor::intervalSelected()
 void
 RideEditor::rideSelected()
 {
-    RideItem *current = main->rideItem();
-    if (!current || !current->ride()) return;
+    findTool->hide(); // hide the dialog!
+    anomalyTool->hide();
+
+    RideItem *current = myRideItem;
+    if (!current || !current->ride() || !current->ride()->dataPoints().count()) {
+        model->setRide(NULL);
+        setIsBlank(true);
+        findTool->rideSelected();
+        return;
+    } else {
+        setIsBlank(false);
+    }
 
     ride = current;
 
@@ -1094,7 +1265,6 @@ RideEditor::rideSelected()
         data = ride->ride()->editorData();
         data->found.clear(); // search is not active, so clear
     }
-
     model->setRide(ride->ride());
 
     // reset the save icon on the toolbar
@@ -1119,7 +1289,22 @@ RideEditor::rideSelected()
     else undoAct->setEnabled(true);
 
     // look for anomalies
-    check();
+    anomalyTool->check();
+
+    // update finder pane to show available channels
+    findTool->rideSelected();
+}
+
+void
+RideEditor::anomalySelected()
+{
+    if (anomalyTool->anomalyList->currentRow() < 0) return;
+
+    // jump to the found item in the main table
+    int row;
+    RideFile::SeriesType series;
+    unxsstring(anomalyTool->anomalyList->item(anomalyTool->anomalyList->currentRow(), 0)->text(), row, series);
+    table->setCurrentIndex(model->index(row,model->columnFor(series)));
 }
 
 // We update the current selection on the table view
@@ -1176,8 +1361,8 @@ RideEditor::endCommand(bool undo, RideCommand *cmd)
 
             // move cursor to point updated
             QModelIndex cursor = model->index(spv->row, model->columnFor(spv->series));
-            // NOTE: This is to circumvent a performance issue with multiple
-            //       calls to setCurrentIndex XXX still TODO...
+            // NOTE: This is to circumvent a performance issue with multiple calls to setCurrentIndex 
+
             if (inLUW) { // remember and do it at the end -- otherwise major performance impact!!
                 itemselection << cursor;
             } else {
@@ -1314,7 +1499,14 @@ RideEditor::endCommand(bool undo, RideCommand *cmd)
         default:
             break;
     }
-    if (!inLUW) check(); // refresh the anomalies...
+
+    // check for anomalies
+    if (!inLUW) {
+        anomalyTool->check();
+
+        // let everyone know we changed some data
+        ride->notifyRideDataChanged();
+    }
 }
 
 void
@@ -1489,13 +1681,12 @@ EditorData::insertRows(int row, int count)
 //
 // Find Dialog
 //
-FindDialog::FindDialog(RideEditor *rideEditor, QWidget *parent) : QDialog(parent), rideEditor(rideEditor)
+FindDialog::FindDialog(RideEditor *rideEditor) : rideEditor(rideEditor)
 {
     // setup the basic window settings; nonmodal, ontop and delete on close
     setWindowTitle("Search");
-    setAttribute(Qt::WA_DeleteOnClose);
+    //setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint | Qt::Tool);
-
 
     // create UI components
     QLabel *look = new QLabel(tr("Find values"), this);
@@ -1520,19 +1711,10 @@ FindDialog::FindDialog(RideEditor *rideEditor, QWidget *parent) : QDialog(parent
     to->setDecimals(5);
     to->setSingleStep(0.00001);
 
-    // which columns?
-    foreach (QString heading, rideEditor->model->headings()) {
-        QCheckBox *add = new QCheckBox(heading);
-        if (heading == tr("Power"))
-            add->setChecked(true);
-        else
-            add->setChecked(false);
-        channels << add;
-    }
 
     // buttons
     findButton = new QPushButton(tr("Find"));
-    closeButton = new QPushButton(tr("Close"));
+    clearButton = new QPushButton(tr("Clear"));
 
     // results
     resultsTable = new QTableWidget(this);
@@ -1560,15 +1742,9 @@ FindDialog::FindDialog(RideEditor *rideEditor, QWidget *parent) : QDialog(parent
     criteria->addWidget(to, 2,1, Qt::AlignLeft|Qt::AlignTop);
     mainLayout->addLayout(criteria);
 
-    QGridLayout *chans = new QGridLayout;
+    chans = new QGridLayout;
     mainLayout->addLayout(chans);
 
-    int row =0;
-    int col =0;
-    foreach (QCheckBox *check, channels) {
-        chans->addWidget(check, row,col);
-        if (++col > 2) { col =0; row++; }
-    }
 
     QHBoxLayout *execute = new QHBoxLayout;
     execute->addStretch();
@@ -1579,25 +1755,24 @@ FindDialog::FindDialog(RideEditor *rideEditor, QWidget *parent) : QDialog(parent
 
     QHBoxLayout *closer = new QHBoxLayout;
     closer->addStretch();
-    closer->addWidget(closeButton);
+    closer->addWidget(clearButton);
     mainLayout->addLayout(closer);
 
     setLayout(mainLayout);
 
     connect(type, SIGNAL(currentIndexChanged(int)), this, SLOT(typeChanged(int)));
     connect(findButton, SIGNAL(clicked()), this, SLOT(find()));
-    connect(closeButton, SIGNAL(clicked()), this, SLOT(accept()));
+    connect(clearButton, SIGNAL(clicked()), this, SLOT(clear()));
     connect(resultsTable, SIGNAL(itemSelectionChanged()), this, SLOT(selection()));
 
     // refresh when data changes...
+    if (rideEditor->ride && rideEditor->ride->ride())
     connect(rideEditor->ride->ride()->command, SIGNAL(endCommand(bool,RideCommand*)), this, SLOT(dataChanged()));
+
 }
 
 FindDialog::~FindDialog()
 {
-    rideEditor->data->found.clear();
-    clearResultsTable();
-    rideEditor->model->forceRedraw();
 }
 
 void
@@ -1614,9 +1789,26 @@ FindDialog::typeChanged(int index)
     }
 }
 
+// close doesnt really close, just hides
+void
+FindDialog::closeEvent(QCloseEvent* event)
+{
+    event->ignore();
+    rideSelected(); // reset the search...
+    hide();
+}
+
+void
+FindDialog::reject()
+{
+    hide();
+}
+
 void
 FindDialog::find()
 {
+    if (rideEditor->data == NULL) return;
+
     // are we looking anywhere?
     bool search = false;
     foreach (QCheckBox *c, channels) if (c->isChecked()) search = true;
@@ -1644,7 +1836,8 @@ FindDialog::find()
                     switch(type->currentIndex()) {
 
                     case 0 : // between
-                        if (value >= from->value() && value <= to->value()) match = true;
+                        if ((value >= from->value() && value <= to->value()) ||
+                            (value <= from->value() && value >= to->value())) match = true;
                         break;
 
                     case 1 : // not between
@@ -1735,7 +1928,7 @@ FindDialog::dataChanged()
 
         // value
         t = new QTableWidgetItem;
-        t->setText(QString("%1").arg(rideEditor->ride->ride()->getPointValue(row,series)));
+        t->setData(Qt::DisplayRole, QVariant(rideEditor->ride->ride()->getPointValue(row,series)));
         t->setFlags(t->flags() & (~Qt::ItemIsEditable));
         resultsTable->setItem(counter, 2, t);
 
@@ -1756,9 +1949,45 @@ FindDialog::dataChanged()
 }
 
 void
-FindDialog::close()
+FindDialog::clear()
 {
-    accept();
+    if (rideEditor->data) {
+        rideEditor->data->found.clear();
+        clearResultsTable();
+        rideEditor->model->forceRedraw();
+    }
+}
+
+void
+FindDialog::rideSelected()
+{
+    // Update the channels we can search
+    // wipe old ones
+    foreach(QWidget *x, channels) {
+        chans->removeWidget(x);
+        delete x;
+    }
+    channels.clear();
+
+    // add new ones
+    foreach (QString heading, rideEditor->model->headings()) {
+        QCheckBox *add = new QCheckBox(heading);
+        if (heading == tr("Power"))
+            add->setChecked(true);
+        else
+            add->setChecked(false);
+        channels << add;
+    }
+
+    int row =0;
+    int col =0;
+    foreach (QCheckBox *check, channels) {
+        chans->addWidget(check, row,col);
+        if (++col > 2) { col =0; row++; }
+    }
+
+    // clear old search results etc
+    clear();
 }
 
 void
@@ -1869,11 +2098,6 @@ PasteSpecialDialog::PasteSpecialDialog(RideEditor *rideEditor, QWidget *parent) 
     contents->setLayout(contentsLayout);
     contents->setFlat(false);
 
-#if 0
-        QDoubleSpinBox *atRow;
-        QComboBox *textDelimeter;
-#endif
-
     okButton = new QPushButton(tr("OK"));
     cancelButton = new QPushButton(tr("Cancel"));
     QHBoxLayout *buttons = new QHBoxLayout;
@@ -1919,8 +2143,6 @@ PasteSpecialDialog::clearResultsTable()
 void
 PasteSpecialDialog::setResultsTable()
 {
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-
     model->clear();
     headings.clear();
 
@@ -1932,7 +2154,7 @@ PasteSpecialDialog::setResultsTable()
             if (hasHeader->isChecked() == true) {
                 // have we mapped this before?
                 QString lookup = "colmap/" + sourceHeadings[i];
-                QString mapto = settings->value(lookup, "Ignore").toString();
+                QString mapto = appsettings->value(this, lookup, "Ignore").toString();
                 // is this an available heading tho?
                 if (columnSelect->findText(mapto) != -1) {
                     headings << mapto;
@@ -1968,7 +2190,7 @@ void
 PasteSpecialDialog::okClicked()
 {
     // headings has the headings for each column
-    // with "Ignore" set if we are to igmore it
+    // with "Ignore" set if we are to ignore it
     // cells contains all the actual data from the
     // buffer.
     // We have three modes; (1) insert means add new
@@ -1986,7 +2208,7 @@ PasteSpecialDialog::okClicked()
     // is why we do an anomaly check at the end.
 
     // add these to the pasted rows
-    double timeOffset, distanceOffset;
+    double timeOffset=0, distanceOffset=0;
     int where = rideEditor->ride->ride()->dataPoints().count();
 
     if (append->isChecked() && rideEditor->ride->ride()->dataPoints().count()) {
@@ -2025,6 +2247,10 @@ PasteSpecialDialog::okClicked()
                 if (headings[col] == tr("Longitude")) newrow.lon = value;
                 if (headings[col] == tr("Altitude")) newrow.alt = value;
                 if (headings[col] == tr("Headwind")) newrow.headwind = value;
+                if (headings[col] == tr("Slope")) newrow.slope = value;
+                if (headings[col] == tr("Temperature")) newrow.temp = value;
+                if (headings[col] == tr("SmO2")) newrow.smo2 = value;
+                if (headings[col] == tr("tHb")) newrow.thb = value;
                 if (headings[col] == tr("Interval")) newrow.interval = value;
             }
 
@@ -2128,7 +2354,7 @@ PasteSpecialDialog::okClicked()
         if (source.columns > target.columns) {
             truncate = true;
         }
-        // partially fill columnss ?
+        // partially fill columns ?
         if (source.columns < target.columns) {
             partial = true;
             target.columns = source.columns;
@@ -2236,8 +2462,50 @@ PasteSpecialDialog::columnChanged()
 
     // lets remember this mapping if its to a source header
     if (hasHeader->isChecked() && headings[column] != "Ignore") {
-        boost::shared_ptr<QSettings> settings = GetApplicationSettings();
         QString lookup = "colmap/" + sourceHeadings[column];
-        settings->setValue(lookup, headings[column]);
+        appsettings->setValue(lookup, headings[column]);
     }
+}
+
+AnomalyDialog::AnomalyDialog(RideEditor *rideEditor) : rideEditor(rideEditor)
+{
+    // setup the basic window settings; nonmodal, ontop and delete on close
+    setWindowTitle(tr("Anomalies"));
+    //setAttribute(Qt::WA_DeleteOnClose);
+    setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint | Qt::Tool);
+    QVBoxLayout *main = new QVBoxLayout(this);
+    main->setContentsMargins(0,0,0,0);
+    main->setSpacing(0);
+
+    anomalyList = new QTableWidget(this);
+    main->addWidget(anomalyList);
+    anomalyList->setColumnCount(2);
+    anomalyList->setColumnHidden(0, true);
+    anomalyList->setSortingEnabled(false);
+    QStringList header;
+    header << "Id" << "Anomalies";
+    anomalyList->setHorizontalHeaderLabels(header);
+    anomalyList->horizontalHeader()->setStretchLastSection(true);
+    anomalyList->verticalHeader()->hide();
+    anomalyList->setShowGrid(false);
+    anomalyList->setSelectionMode(QAbstractItemView::SingleSelection);
+    anomalyList->setSelectionBehavior(QAbstractItemView::SelectRows);
+}
+
+AnomalyDialog::~AnomalyDialog()
+{
+}
+
+// close doesnt really close, just hides
+void
+AnomalyDialog::closeEvent(QCloseEvent* event)
+{
+    event->ignore();
+    hide();
+}
+
+void
+AnomalyDialog::reject()
+{
+    hide();
 }

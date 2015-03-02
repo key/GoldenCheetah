@@ -1,49 +1,53 @@
-# -*- mode: sh -*- ###########################
+################################################################
 # Qwt Widget Library
 # Copyright (C) 1997   Josef Wilgen
 # Copyright (C) 2002   Uwe Rathmann
 #
 # This library is free software; you can redistribute it and/or
 # modify it under the terms of the Qwt License, Version 1.0
-##############################################
+################################################################
 
-VVERSION = $$[QT_VERSION]
-isEmpty(VVERSION) { 
+message(The qwtmathml library contains code of the MML Widget from the Qt solutions package.)
+message(Beside the Qwt license you also have to take care of its license. )
 
-	# Qt3
+include( $${PWD}/../textengines.pri )
 
-	message(qwtmathml is not supported for Qt3 !)
-	TEMPLATE  = subdirs
+TARGET    = $$qwtLibraryTarget(qwtmathml)
+QT       += xml
 
-} else {
+greaterThan(QT_MAJOR_VERSION, 4) {
 
-	# Qt4
-
-	include( ../textengines.pri )
-
-	exists( qtmmlwidget.cpp ) {
-
-		TARGET    = qwtmathml$${SUFFIX_STR}
-		VERSION   = 1.0.0
-		QT       += xml
-
-		HEADERS = \
-			qwt_mathml_text_engine.h
-
-		SOURCES = \
-			qwt_mathml_text_engine.cpp
-
-		# The files below can be found in the MathML tarball of the Qt Solution 
-    	# package http://www.trolltech.com/products/qt/addon/solutions/catalog/4/Widgets/qtmmlwidget
-		# that is available for owners of a commercial Qt license.
-		#
-		# Copy them here, or modify the pro file to your installation.
-	
-		HEADERS += qtmmlwidget.h
-		SOURCES += qtmmlwidget.cpp
-	}
-
-	else {
-		error( "qtmmlwidget.cpp is missing, see http://www.trolltech.com/products/qt/addon/solutions/catalog/4/Widgets/qtmmlwidget" )
-	}
+	QT       += widgets
 }
+
+HEADERS = \
+    qwt_mathml_text_engine.h
+
+SOURCES = \
+    qwt_mathml_text_engine.cpp
+
+# qwt_mml_document.h/qwt_mml_document.cpp has been stripped down from
+# the mathml widgets offered in the Qt solutions package. 
+
+HEADERS += qwt_mml_document.h
+SOURCES += qwt_mml_document.cpp
+
+qwtmathmlspec.files  = qwtmathml.prf
+qwtmathmlspec.path  = $${QWT_INSTALL_FEATURES}
+
+INSTALLS += qwtmathmlspec
+
+CONFIG(lib_bundle) {
+
+    FRAMEWORK_HEADERS.version = Versions
+    FRAMEWORK_HEADERS.files   = qwt_mathml_text_engine.h
+    FRAMEWORK_HEADERS.path    = Headers
+    QMAKE_BUNDLE_DATA        += FRAMEWORK_HEADERS
+}
+else {
+
+    headers.files  = qwt_mathml_text_engine.h
+    headers.path   = $${QWT_INSTALL_HEADERS}
+    INSTALLS       += headers
+}
+

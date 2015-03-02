@@ -16,15 +16,14 @@
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#include <QApplication>
 #include "DataProcessor.h"
-#include "MainWindow.h"
+#include "Context.h"
 #include "AllPlot.h"
 #include "Settings.h"
 #include "Units.h"
-#include <assert.h>
 
 DataProcessorFactory *DataProcessorFactory::instance_;
-
 DataProcessorFactory &DataProcessorFactory::instance()
 {
     if (!instance_) instance_ = new DataProcessorFactory();
@@ -34,7 +33,7 @@ DataProcessorFactory &DataProcessorFactory::instance()
 bool
 DataProcessorFactory::registerProcessor(QString name, DataProcessor *processor)
 {
-    assert(!processors.contains(name));
+    if (processors.contains(name)) return false; // don't register twice!
     processors.insert(name, processor);
     return true;
 }
@@ -42,7 +41,6 @@ DataProcessorFactory::registerProcessor(QString name, DataProcessor *processor)
 bool
 DataProcessorFactory::autoProcess(RideFile *ride)
 {
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
     bool changed = false;
 
     // run through the processors and execute them!
@@ -51,14 +49,14 @@ DataProcessorFactory::autoProcess(RideFile *ride)
     while (i.hasNext()) {
         i.next();
         QString configsetting = QString("dp/%1/apply").arg(i.key());
-        if (settings->value(configsetting, "Manual").toString() == "Auto")
+        if (appsettings->value(NULL, configsetting, "Manual").toString() == "Auto")
             i.value()->postProcess(ride);
     }
 
     return changed;
 }
 
-ManualDataProcessorDialog::ManualDataProcessorDialog(MainWindow *main, QString name, RideItem *ride) : main(main), ride(ride)
+ManualDataProcessorDialog::ManualDataProcessorDialog(Context *context, QString name, RideItem *ride) : context(context), ride(ride)
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(name);
@@ -70,6 +68,9 @@ ManualDataProcessorDialog::ManualDataProcessorDialog(MainWindow *main, QString n
     processor = processors.value(name, NULL);
 
     if (processor == NULL) reject();
+
+    // Change window title to Localized Name
+    setWindowTitle(processor->name());
 
     QFont font;
     font.setWeight(QFont::Black);
@@ -105,9 +106,20 @@ ManualDataProcessorDialog::ManualDataProcessorDialog(MainWindow *main, QString n
 void
 ManualDataProcessorDialog::okClicked()
 {
-    if (processor->postProcess((RideFile *)ride->ride(), config) == true) {
-        main->notifyRideSelected();     // XXX to remain compatible with rest of GC for now
+    // stop ok button from being clickable and show waiting cursor
+    ok->setEnabled(false);
+    cancel->setEnabled(false);
+
+    QApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+
+    if (ride && ride->ride() && processor->postProcess((RideFile *)ride->ride(), config) == true) {
+        context->notifyRideSelected(ride);     // to remain compatible with rest of GC for now
     }
+
+    // reset cursor and wait
+    QApplication::restoreOverrideCursor();
+
+    // and we're done
     accept();
 }
 

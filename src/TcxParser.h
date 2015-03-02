@@ -19,48 +19,58 @@
 
 #ifndef _TcxParser_h
 #define _TcxParser_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 #include <QString>
 #include <QDateTime>
 #include <QXmlDefaultHandler>
 #include "Settings.h"
+#include "locale.h" // for LC_LOCALE definition used in strtod
 
 class TcxParser : public QXmlDefaultHandler
 {
+
 public:
-    TcxParser(RideFile* rideFile);
 
-    bool startElement( const QString&, const QString&, const QString&,
-		       const QXmlAttributes& );
+    TcxParser(RideFile* rideFile, QList<RideFile*>*rides);
+
+    bool startElement( const QString&, const QString&, const QString&, const QXmlAttributes& );
     bool endElement( const QString&, const QString&, const QString& );
-
     bool characters( const QString& );
+
+    RideFile*	rideFile;
+    QList<RideFile*> *rides; // when parsed multiple rides
 
 private:
 
-    RideFile*	rideFile;
-
     QString	buffer;
-    QVariant    isGarminSmartRecording;
-    QVariant    GarminHWM;
+    QVariant isGarminSmartRecording;
+    QVariant GarminHWM;
 
-    QDateTime	start_time;
-    QDateTime	last_time;
-    QDateTime	time;
-    double	lastDistance;
-    double	distance;
+    QDateTime start_time;
+    QDateTime last_time;
+    QDateTime time;
 
-    int		lap;
-    double	power;
-    double	cadence;
-    double	hr;
-    double      lastAltitude;
-    double      alt;
-    double      lat;
-    double      lon;
-    double      headwind;
+    double last_distance;
+    double distance;
+    double lapSecs; // for pause intervals in pool swimming files
+    enum { NotSwim, MayBeSwim, Swim } swim; // to detect pool swimming files
+
+    bool   first; // first ride found, when it may contain collections!
+    int	   lap;
+    double power;
+    double cadence;
+    double rcad;
+    double hr;
+    double speed;
+    double torque;
+    double alt;
+    double lat;
+    double lon;
+    double headwind;
+    double secs;
+    bool   badgps;
 };
 
 #endif // _TcxParser_h
-

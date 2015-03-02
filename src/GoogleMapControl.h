@@ -18,72 +18,129 @@
 
 #ifndef _GC_GoogleMapControl_h
 #define _GC_GoogleMapControl_h
+#include "GoldenCheetah.h"
 
 #include <QWidget>
 #include <QtWebKit>
+#include <QDialog>
+#include <QWebPage>
+#include <QWebView>
+#include <QWebFrame>
+
 #include <string>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include "RideFile.h"
-#include "MainWindow.h"
+#include "IntervalItem.h"
+#include "Context.h"
 
 class QMouseEvent;
 class RideItem;
-class MainWindow;
+class Context;
 class QColor;
 class QVBoxLayout;
 class QTabWidget;
+class GoogleMapControl;
+class IntervalSummaryWindow;
 
-class GoogleMapControl : public QWidget
+// trick the maps api into ignoring gestures by
+// pretending to be chrome. see: http://developer.qt.nokia.com/forums/viewthread/1643/P15
+class myWebPage : public QWebPage
 {
-Q_OBJECT
+#if 0
+    virtual QString userAgentForUrl(const QUrl&) const {
+        return "Mozilla/5.0";
+    }
+#endif
+};
 
- private:
-    MainWindow *main;
-    QVBoxLayout *layout;
-    QWebView *view;
-    MainWindow *parent;
-    GoogleMapControl();  // default ctor
-    int range;
-    std::string CreatePolyLine();
-    void CreateSubPolyLine(const std::vector<RideFilePoint> &points,
-                           std::ostringstream &oss,
-                           int avgPower);
-    std::string CreateMapToolTipJavaScript();
-    std::string CreateIntervalMarkers();
-    void loadRide();
-    // the web browser is loading a page, do NOT start another load
-    bool loadingPage;
-    // the ride has changed, load a new page
-    bool newRideToLoad;
+class WebBridge : public QObject
+{
+    Q_OBJECT;
 
-    QColor GetColor(int watts);
+    private:
+        Context *context;
+        GoogleMapControl *gm;
 
-    // a GPS normalized vectory of ride data points,
-    // when a GPS unit loses signal it seems to
-    // put a coordinate close to 180 into the data
-    std::vector<RideFilePoint> rideData;
-    // current ride CP
-    int rideCP;
-    // current HTML for the ride
-    std::ostringstream currentPage;
-    RideItem *current;
+        RideFilePoint* point;
+        int selection;
 
- public slots:
-    void rideSelected();
+        QList<RideFilePoint*> searchPoint(double lat, double lng);
 
- private slots:
-    void loadStarted();
-    void loadFinished(bool);
+    public:
+        WebBridge(Context *context, GoogleMapControl *gm) : context(context), gm(gm), selection(0) {}
 
- protected:
-    void createHtml();
-    void resizeEvent(QResizeEvent *);
+    public slots:
+        Q_INVOKABLE void call(int count);
 
- public:
-    GoogleMapControl(MainWindow *);
-    virtual ~GoogleMapControl() { }
+        // drawing basic route, and interval polylines
+        Q_INVOKABLE int intervalCount();
+        Q_INVOKABLE QVariantList getLatLons(int i); // get array of latitudes for highlighted n
+
+        // once map and basic route is loaded
+        // this slot is called to draw additional
+        // overlays e.g. shaded route, markers
+        Q_INVOKABLE void drawOverlays();
+
+        // display/toggle interval on map
+        Q_INVOKABLE void toggleInterval(int);
+        Q_INVOKABLE void hoverInterval(int);
+        Q_INVOKABLE void clearHover();
+        Q_INVOKABLE void hoverPath(double lat, double lng);
+        Q_INVOKABLE void clickPath(double lat, double lng);
+        Q_INVOKABLE void mouseup();
+
+        void intervalsChanged() { emit drawIntervals(); }
+
+    signals:
+        void drawIntervals();
+};
+
+class GoogleMapControl : public GcChartWindow
+{
+    Q_OBJECT
+    G_OBJECT
+
+    public:
+        GoogleMapControl(Context *);
+        ~GoogleMapControl();
+        bool first;
+
+    public slots:
+        void forceReplot();
+        void rideSelected();
+        void createMarkers();
+        void drawShadedRoute();
+        void zoomInterval(IntervalItem*);
+        void configChanged(qint32);
+
+        void drawTempInterval(IntervalItem *current);
+        void clearTempInterval();
+
+    private:
+        Context *context;
+        QVBoxLayout *layout;
+        QWebView *view;
+        WebBridge *webBridge;
+        GoogleMapControl();  // default ctor
+        int range;
+        int rideCP; // rider's CP
+        QString currentPage;
+        RideItem *current;
+        bool firstShow;
+        IntervalSummaryWindow *overlayIntervals;
+
+        QColor GetColor(int watts);
+        void createHtml();
+
+    private slots:
+        void loadRide();
+        void updateFrame();
+
+    protected:
+        bool event(QEvent *event);
+        bool stale;
 };
 
 #endif

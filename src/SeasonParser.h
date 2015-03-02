@@ -18,6 +18,7 @@
 
 #ifndef _seasonparser_h
 #define _seasonparser_h
+#include "GoldenCheetah.h"
 
 #include <QXmlDefaultHandler>
 #include "Season.h"
@@ -42,6 +43,8 @@ protected:
     QDate seasonDateToDate(QString);
     Season season;
     QList<Season> seasons;
+    int loadcount;
+    QString dateString;
 
 };
 #endif //SeasonParser

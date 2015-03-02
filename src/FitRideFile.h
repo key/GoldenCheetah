@@ -18,11 +18,13 @@
 
 #ifndef _FitRideFile_h
 #define _FitRideFile_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 
 struct FitFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const; 
+    bool hasWrite() const { return false; }
 };
 
 #endif // _FitRideFile_h

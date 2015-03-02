@@ -45,10 +45,21 @@ RideFileTableModel::setRide(RideFile *newride)
         connection = ride->command;
         connect(ride->command, SIGNAL(beginCommand(bool,RideCommand*)), this, SLOT(beginCommand(bool,RideCommand*)));
         connect(ride->command, SIGNAL(endCommand(bool,RideCommand*)), this, SLOT(endCommand(bool,RideCommand*)));
+        connect(ride, SIGNAL(deleted()), this, SLOT(deleted()));
 
         // refresh
         emit layoutChanged();
     }
+}
+
+void
+RideFileTableModel::deleted()
+{
+    // we don't need to disconnect since they're free'd up by QT
+    ride = NULL;
+    beginResetModel();
+    endResetModel();
+    dataChanged(createIndex(0,0), createIndex(90,999999));
 }
 
 void
@@ -102,6 +113,94 @@ RideFileTableModel::setHeadings(RideFile::SeriesType series)
             headings_ << tr("Headwind");
             headingsType << RideFile::headwind;
         }
+        if (series == RideFile::slope || ride->areDataPresent()->slope) {
+            headings_ << tr("Slope");
+            headingsType << RideFile::slope;
+        }
+        if (series == RideFile::temp || ride->areDataPresent()->temp) {
+            headings_ << tr("Temperature");
+            headingsType << RideFile::temp;
+        }
+        if (series == RideFile::lrbalance || ride->areDataPresent()->lrbalance) {
+            headings_ << tr("Left/Right Balance");
+            headingsType << RideFile::lrbalance;
+        }
+        if (series == RideFile::lte || ride->areDataPresent()->lte) {
+            headings_ << tr("Left TE");
+            headingsType << RideFile::lte;
+        }
+        if (series == RideFile::rte || ride->areDataPresent()->rte) {
+            headings_ << tr("Right TE");
+            headingsType << RideFile::rte;
+        }
+        if (series == RideFile::lps || ride->areDataPresent()->lps) {
+            headings_ << tr("Left PS");
+            headingsType << RideFile::lps;
+        }
+        if (series == RideFile::rps || ride->areDataPresent()->rps) {
+            headings_ << tr("Right PS");
+            headingsType << RideFile::rps;
+        }
+        if (series == RideFile::lpco || ride->areDataPresent()->lpco) {
+            headings_ << tr("Left Platform Center Offset");
+            headingsType << RideFile::lpco;
+        }
+        if (series == RideFile::rpco || ride->areDataPresent()->rpco) {
+            headings_ << tr("Right Platform Center Offset");
+            headingsType << RideFile::rpco;
+        }
+        if (series == RideFile::lppb || ride->areDataPresent()->lppb) {
+            headings_ << tr("Left Power Phase Start");
+            headingsType << RideFile::lppb;
+        }
+        if (series == RideFile::lppe || ride->areDataPresent()->lppe) {
+            headings_ << tr("Left Power Phase End");
+            headingsType << RideFile::lppe;
+        }
+        if (series == RideFile::rppb || ride->areDataPresent()->rppb) {
+            headings_ << tr("Right Power Phase Start");
+            headingsType << RideFile::rppb;
+        }
+        if (series == RideFile::rppe || ride->areDataPresent()->rppe) {
+            headings_ << tr("Right Power Phase End");
+            headingsType << RideFile::rppe;
+        }
+        if (series == RideFile::lpppb || ride->areDataPresent()->lpppb) {
+            headings_ << tr("Left Peak Power Phase Start");
+            headingsType << RideFile::lpppb;
+        }
+        if (series == RideFile::lpppe || ride->areDataPresent()->lpppe) {
+            headings_ << tr("Left Peak Power Phase End");
+            headingsType << RideFile::lpppe;
+        }
+        if (series == RideFile::lpppb || ride->areDataPresent()->rpppb) {
+            headings_ << tr("Right Peak Power Phase Start");
+            headingsType << RideFile::lpppb;
+        }
+        if (series == RideFile::rpppe || ride->areDataPresent()->rpppe) {
+            headings_ << tr("Right Peak Power Phase End");
+            headingsType << RideFile::rpppe;
+        }
+        if (series == RideFile::smo2 || ride->areDataPresent()->smo2) {
+            headings_ << tr("SmO2");
+            headingsType << RideFile::smo2;
+        }
+        if (series == RideFile::thb || ride->areDataPresent()->thb) {
+            headings_ << tr("tHb");
+            headingsType << RideFile::thb;
+        }
+        if (series == RideFile::rcad || ride->areDataPresent()->rcad) {
+            headings_ << tr("Run Cadence");
+            headingsType << RideFile::rcad;
+        }
+        if (series == RideFile::rvert || ride->areDataPresent()->rvert) {
+            headings_ << tr("Vertical Oscillation");
+            headingsType << RideFile::rvert;
+        }
+        if (series == RideFile::rcontact || ride->areDataPresent()->rcontact) {
+            headings_ << tr("GCT");
+            headingsType << RideFile::rcontact;
+        }
         if (series == RideFile::interval || ride->areDataPresent()->interval) {
             headings_ << tr("Interval");
             headingsType << RideFile::interval;
@@ -115,8 +214,7 @@ RideFileTableModel::flags(const QModelIndex &index) const
     if (!index.isValid())
         return Qt::ItemIsEditable;
     else
-        return QAbstractTableModel::flags(index) | Qt::ItemIsEditable |
-                                     Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        return QAbstractTableModel::flags(index) | Qt::ItemIsEditable | Qt::ItemIsEnabled | Qt::ItemIsSelectable;
 }
 
 QVariant
@@ -126,8 +224,9 @@ RideFileTableModel::data(const QModelIndex & index, int role) const
 
     if (index.row() >= ride->dataPoints().count() || index.column() >= headings_.count())
         return QVariant();
-    else
-        return ride->getPointValue(index.row(), headingsType[index.column()]);
+    else {
+        return ride->getPoint(index.row(), headingsType[index.column()]);
+    }
 }
 
 QVariant
@@ -266,7 +365,8 @@ void
 RideFileTableModel::forceRedraw()
 {
     // tell the view to redraw everything
-    dataChanged(createIndex(0,0), createIndex(headingsType.count(), ride->dataPoints().count()));
+    if (ride)
+        dataChanged(createIndex(0,0), createIndex(headingsType.count(), ride->dataPoints().count()));
 }
 
 //

@@ -20,15 +20,16 @@
 #include "LTMOutliers.h"
 #include "Settings.h"
 #include "Units.h"
+#include "HelpWhatsThis.h"
 #include <algorithm>
 #include <QVector>
-
-#define tr(s) QObject::tr(s)
 
 // Config widget used by the Preferences/Options config panes
 class FixTorque;
 class FixTorqueConfig : public DataProcessorConfig
 {
+    Q_DECLARE_TR_FUNCTIONS(FixTorqueConfig)
+
     friend class ::FixTorque;
     protected:
         QHBoxLayout *layout;
@@ -37,6 +38,9 @@ class FixTorqueConfig : public DataProcessorConfig
 
     public:
         FixTorqueConfig(QWidget *parent) : DataProcessorConfig(parent) {
+
+            HelpWhatsThis *help = new HelpWhatsThis(parent);
+            parent->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::MenuBar_Edit_AdjustTorqueValues));
 
             layout = new QHBoxLayout(this);
 
@@ -67,13 +71,11 @@ class FixTorqueConfig : public DataProcessorConfig
         }
 
         void readConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            ta->setText(settings->value(GC_DPTA, "0 nm").toString());
+            ta->setText(appsettings->value(NULL, GC_DPTA, "0 nm").toString());
         }
 
         void saveConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            settings->setValue(GC_DPTA, ta->text());
+            appsettings->setValue(GC_DPTA, ta->text());
         }
 };
 
@@ -83,6 +85,7 @@ class FixTorqueConfig : public DataProcessorConfig
 //                           to ensure dataPoints are contiguous in time
 //
 class FixTorque : public DataProcessor {
+    Q_DECLARE_TR_FUNCTIONS(FixTorque)
 
     public:
         FixTorque() {}
@@ -95,9 +98,14 @@ class FixTorque : public DataProcessor {
         DataProcessorConfig* processorConfig(QWidget *parent) {
             return new FixTorqueConfig(parent);
         }
+
+        // Localized Name
+        QString name() {
+            return (tr("Adjust Torque Values"));
+        }
 };
 
-static bool fixTorqueAdded = DataProcessorFactory::instance().registerProcessor(QString(tr("Adjust Torque Values")), new FixTorque());
+static bool fixTorqueAdded = DataProcessorFactory::instance().registerProcessor(QString("Adjust Torque Values"), new FixTorque());
 
 bool
 FixTorque::postProcess(RideFile *ride, DataProcessorConfig *config=0)
@@ -110,8 +118,7 @@ FixTorque::postProcess(RideFile *ride, DataProcessorConfig *config=0)
     double nmAdjust;
 
     if (config == NULL) { // being called automatically
-        boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-        ta = settings->value(GC_DPTA, "0 nm").toString();
+        ta = appsettings->value(NULL, GC_DPTA, "0 nm").toString();
     } else { // being called manually
         ta = ((FixTorqueConfig*)(config))->ta->text();
     }

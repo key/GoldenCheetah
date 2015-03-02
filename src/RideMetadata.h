@@ -18,11 +18,19 @@
 
 #ifndef _GC_RideMetadata_h
 #define _GC_RideMetadata_h
+#include "GoldenCheetah.h"
 
-#include "MainWindow.h"
+#include "Context.h"
 #include "SpecialFields.h"
+
 #include <QWidget>
+#include <QLabel>
+#include <QCheckBox>
+#include <QScrollArea>
 #include <QXmlDefaultHandler>
+#include <QTextEdit>
+#include <QCompleter>
+#include <QMessageBox>
 
 // field types
 #define FIELD_TEXT      0
@@ -32,6 +40,9 @@
 #define FIELD_DOUBLE    4
 #define FIELD_DATE      5
 #define FIELD_TIME      6
+#define FIELD_CHECKBOX  7
+
+class RideMetadata;
 
 class KeywordDefinition
 {
@@ -39,124 +50,160 @@ class KeywordDefinition
         QString name;       // keyword for autocomplete
         QColor  color;      // color to highlight with
         QStringList tokens; // texts to find from notes
+
+        static unsigned long fingerprint(QList<KeywordDefinition>);
 };
 
 class FieldDefinition
 {
     public:
+
         QString tab,
                 name;
         int type;
+        bool diary; // show in summary on diary page...
+        QStringList values; // autocomplete 'defaults'
+
+        static unsigned long fingerprint(QList<FieldDefinition>);
+        QCompleter *getCompleter(QObject *parent);
+
+        FieldDefinition() : tab(""), name(""), type(0), diary(false), values() {}
+        FieldDefinition(QString tab, QString name, int type, bool diary, QStringList values)
+                        : tab(tab), name(name), type(type), diary(diary), values(values) {}
 };
 
 class FormField : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        FormField(FieldDefinition, MainWindow *);
+        FormField(FieldDefinition, RideMetadata *);
         ~FormField();
         FieldDefinition definition; // define the field
         QLabel  *label;             // label
         QCheckBox *enabled;           // is the widget enabled or not?
         QWidget *widget;            // updating widget
+        QCompleter *completer;      // for completion
+
+        void setLinkedDefault(QString text);    // set linked fields with default value
 
     public slots:
         void dataChanged();         // from the widget - we changed something
         void editFinished();        // from the widget - we finished editing this field
-        void rideSelected();        // from GC - a new ride got picked
+        void metadataChanged();     // from GC - a new ride got picked / changed elsewhere
         void stateChanged(int);     // should we enable/disable the widget?
+        void focusOut(QFocusEvent *event=NULL);
 
     private:
-        MainWindow *main;
+        RideMetadata *meta;
         bool edited;                // value has been changed
         bool active;                // when data being changed for rideSelected
-        SpecialFields sp;
-};
-
-class KeywordCompleter : public QCompleter
-{
-    Q_OBJECT
-
-    public:
-        KeywordCompleter(QWidget *parent) : QCompleter(parent) {}
-        KeywordCompleter(QStringList list, QWidget *parent) : QCompleter(list, parent) {}
-        QStringList splitPath(const QString &path) const;
-
-    public slots:
-        void textUpdated(const QString &);
-};
-
-class KeywordField : public QLineEdit
-{
-    Q_OBJECT
-
-    public:
-        KeywordField(QWidget *);
-
-    public slots:
-        void textUpdated(const QString &);
-        void completeText(QString, QString);
-        void completerActive(const QString &);
-
-    private:
-        KeywordCompleter *completer;
-        QString full;
-
+        bool isTime;                // when we edit metrics but they are really times
 };
 
 class Form : public QScrollArea
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        Form(MainWindow *);
+        Form(RideMetadata *);
         ~Form();
-        void addField(FieldDefinition x) { fields.append(new FormField(x, main)); }
+        void addField(FieldDefinition &x);
         void arrange(); // the meat of the action, arranging fields on the screen
+        void clear();  // destroy contents prior to delete
+        void initialise();  // re-initialise contents (after clear)
 
+        QVector<FormField*> fields; // keep track so we can destroy
+        QVector<QHBoxLayout *> overrides; // keep track so we can destroy
     private:
-        MainWindow *main;
-        SpecialFields sp;
+        RideMetadata *meta;
         QWidget *contents;
         QHBoxLayout *hlayout;
         QVBoxLayout *vlayout1, *vlayout2;
         QGridLayout *grid1, *grid2;
-        QList<FormField*> fields; // keep track so we can destroy
-        QList<QHBoxLayout *> overrides; // keep track so we can destroy
 
+};
+
+class DefaultDefinition
+{
+    public:
+        QString field;
+        QString value;
+        QString linkedField;
+        QString linkedValue;
+
+
+    DefaultDefinition() : field(""), value(""), linkedField(""), linkedValue("") {}
+    DefaultDefinition(QString field, QString value, QString linkedField, QString linkedValue)
+                      : field(field), value(value), linkedField(linkedField), linkedValue(linkedValue) {}
 };
 
 class RideMetadata : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+    Q_PROPERTY(RideItem *ride READ rideItem WRITE setRideItem)
+    RideItem *_ride, *_connected;
 
     public:
-        RideMetadata(MainWindow *);
-        static void serialize(QString filename, QList<KeywordDefinition>, QList<FieldDefinition>);
-        static void readXML(QString filename, QList<KeywordDefinition>&, QList<FieldDefinition>&);
+        RideMetadata(Context *, bool singlecolumn = false);
+        static void serialize(QString filename, QList<KeywordDefinition>, QList<FieldDefinition>, QString colofield, QList<DefaultDefinition>defaultDefinitions);
+        static void readXML(QString filename, QList<KeywordDefinition>&, QList<FieldDefinition>&, QString &colorfield, QList<DefaultDefinition>&defaultDefinitions);
         QList<KeywordDefinition> getKeywords() { return keywordDefinitions; }
         QList<FieldDefinition> getFields() { return fieldDefinitions; }
+        QList<DefaultDefinition> getDefaults() { return defaultDefinitions; }
+
+        QString getColorField() const { return colorfield; }
+        void setColorField(QString x) { colorfield = x; }
+
+        void setRideItem(RideItem *x);
+        RideItem *rideItem() const;
+
+        void addFormField(FormField *f);
+        QVector<FormField*> getFormFields();
+
+        bool singlecolumn;
+        SpecialFields sp;
+
+        Context *context;
+        SpecialTabs specialTabs;
+
+        QPalette palette; // to be applied to all widgets
+
 
     public slots:
-        void configUpdate();
+        void configChanged(qint32);
+        void metadataChanged(); // when its changed elsewhere we need to refresh fields
+        void setExtraTab();     // shows fields not configured but present in ride file
+        void warnDateTime(QDateTime); // warn if file already exists after date/time changed
 
     private:
-        MainWindow *main;
+
 
     QTabWidget *tabs;
     QMap <QString, Form *> tabList;
+    Form *extraForm;
+    QList<FieldDefinition> extraDefs;
 
     QStringList keywordList; // for completer
     QList<KeywordDefinition> keywordDefinitions;
     QList<FieldDefinition>   fieldDefinitions;
+    QList<DefaultDefinition>   defaultDefinitions;
+
+    QVector<FormField*>   formFields;
+
+    QString colorfield;
 };
 
 class MetadataXMLParser : public QXmlDefaultHandler
 {
 
 public:
-    bool startDocument() { return TRUE; }
+    bool startDocument() { return true; }
     bool endDocument();
     bool endElement( const QString&, const QString&, const QString &qName );
     bool startElement( const QString&, const QString&, const QString &name, const QXmlAttributes &attrs );
@@ -164,6 +211,8 @@ public:
 
     QList<KeywordDefinition> getKeywords() { return keywordDefinitions; }
     QList<FieldDefinition> getFields() { return fieldDefinitions; }
+    QString getColorField() { return colorfield; }
+    QList<DefaultDefinition> getDefaults() { return defaultDefinitions; }
 
 protected:
     QString buffer;
@@ -171,11 +220,26 @@ protected:
     // ths results are here
     QList<KeywordDefinition> keywordDefinitions;
     QList<FieldDefinition>   fieldDefinitions;
+    QString colorfield;
+    QList<DefaultDefinition>   defaultDefinitions;
 
     // whilst parsing elements are stored here
     KeywordDefinition keyword;
     FieldDefinition   field;
+    DefaultDefinition   adefault;
     int red, green, blue;
 };
 
+// version of qtextedit with signal when lost focus
+class GTextEdit : public QTextEdit
+{
+    Q_OBJECT
+
+    public:
+        GTextEdit(QWidget*parent) : QTextEdit(parent) {}
+        void focusOutEvent (QFocusEvent *event) { emit focusOut(event); }
+
+    signals:
+        void focusOut(QFocusEvent *);
+};
 #endif

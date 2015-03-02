@@ -18,44 +18,82 @@
 
 #ifndef _GC_Aerolab_h
 #define _GC_Aerolab_h 1
+#include "GoldenCheetah.h"
 
 #include <qwt_plot.h>
-#include <qwt_data.h>
+#include <qwt_series_data.h>
+#include <qwt_plot_canvas.h>
 #include <QtGui>
+
+#include <QWidget>
+#include <QFrame>
+#include <QTableWidget>
+#include <QTextEdit>
+#include <QStackedWidget>
+
+#include "LTMWindow.h" // for tooltip/canvaspicker
 
 // forward references
 class RideItem;
-class RideFilePoint;
+struct RideFilePoint;
 class QwtPlotCurve;
 class QwtPlotGrid;
 class QwtPlotMarker;
 class AerolabWindow;
-class MainWindow;
+class Context;
+class IntervalAerolabData;
+class LTMToolTip;
+class LTMCanvasPicker;
+
 
 class Aerolab : public QwtPlot {
 
   Q_OBJECT
+  G_OBJECT
+
 
   public:
-  Aerolab(QWidget *parent);
+  Aerolab( AerolabWindow *, Context * );
   bool byDistance() const { return bydist; }
   bool useMetricUnits;  // whether metric units are used (or imperial)
   void setData(RideItem *_rideItem, bool new_zoom);
+  void setAxisTitle(int axis, QString label);
+
+  void refreshIntervalMarkers();
+
+    private:
+        Context *context;
+        AerolabWindow *parent;
+
+        LTMToolTip      *tooltip;
+        LTMCanvasPicker *_canvasPicker; // allow point selection/hover
+
+        void adjustEoffset();
 
   public slots:
-  void setByDistance();
-  void configChanged();
+
+  void setAutoEoffset(int value);
+  void setConstantAlt(int value);
+  void setByDistance(int value);
+  void configChanged(qint32);
+
+  void pointHover( QwtPlotCurve *, int );
 
   signals:
 
   protected:
   friend class ::AerolabWindow;
-  QVariant unit;
+  friend class ::IntervalAerolabData;
+
+
   QwtPlotGrid *grid;
+  QVector<QwtPlotMarker*> d_mrk;
 
   // One curve to plot in the Course Profile:
   QwtPlotCurve *veCurve;   // virtual elevation curve
   QwtPlotCurve *altCurve;    // recorded elevation curve, if available
+
+  QwtPlotCurve *intervalHighlighterCurve;  // highlight selected intervals on the Plot
 
   RideItem *rideItem;
 
@@ -72,6 +110,8 @@ class Aerolab : public QwtPlot {
 
   int smooth;
   bool bydist;
+  bool autoEoffset;
+  bool constantAlt;
   int arrayLength;
   int iCrr;
   int iCda;
@@ -85,7 +125,7 @@ class Aerolab : public QwtPlot {
 
   double   slope(double, double, double, double, double, double, double);
   void     recalc(bool);
-  void     setYMax();
+  void     setYMax(bool);
   void     setXTitle();
   void     setIntCrr(int);
   void     setIntCda(int);
@@ -93,18 +133,20 @@ class Aerolab : public QwtPlot {
   void     setIntEta(int);
   void     setIntEoffset(int);
   void     setIntTotalMass(int);
-  double   getCrr() const { return (double)crr; };
-  double   getCda() const { return (double)cda; };
-  double   getTotalMass() const { return (double)totalMass; };
-  double   getRho() const { return (double)rho; };
-  double   getEta() const { return (double)eta; };
-  double   getEoffset() const { return (double)eoffset; };
-  int      intCrr() const { return (int)( crr * 1000000  ); };
-  int      intCda() const { return (int)( cda * 100000); };
-  int      intTotalMass() const { return (int)( totalMass * 100); };
-  int      intRho() const { return (int)( rho * 10000); };
-  int      intEta() const { return (int)( eta * 10000); };
-  int      intEoffset() const { return (int)( eoffset * 100); };
+  double   getCrr() const { return (double)crr; }
+  double   getCda() const { return (double)cda; }
+  double   getTotalMass() const { return (double)totalMass; }
+  double   getRho() const { return (double)rho; }
+  double   getEta() const { return (double)eta; }
+  double   getEoffset() const { return (double)eoffset; }
+  int      intCrr() const { return (int)( crr * 1000000  ); }
+  int      intCda() const { return (int)( cda * 10000); }
+  int      intTotalMass() const { return (int)( totalMass * 100); }
+  int      intRho() const { return (int)( rho * 10000); }
+  int      intEta() const { return (int)( eta * 10000); }
+  int      intEoffset() const { return (int)( eoffset * 100); }
+  QString  estimateCdACrr(RideItem* rideItem);
+
 };
 
 #endif // _GC_Aerolab_h

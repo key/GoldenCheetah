@@ -17,8 +17,9 @@
  */
 
 #include "LTMSettings.h"
-#include "LTMTool.h"
 #include "MainWindow.h"
+#include "LTMTool.h"
+#include "Context.h"
 #include "LTMChartParser.h"
 
 #include <QtGui>
@@ -30,8 +31,8 @@
 /*----------------------------------------------------------------------
  * EDIT CHART DIALOG
  *--------------------------------------------------------------------*/
-EditChartDialog::EditChartDialog(MainWindow *mainWindow, LTMSettings *settings, QList<LTMSettings>presets) :
-    QDialog(mainWindow, Qt::Dialog), mainWindow(mainWindow), settings(settings), presets(presets)
+EditChartDialog::EditChartDialog(Context *context, LTMSettings *settings, QList<LTMSettings>presets) :
+    QDialog(context->mainWindow, Qt::Dialog), context(context), settings(settings), presets(presets)
 {
     setWindowTitle(tr("Enter Chart Name"));
 
@@ -66,14 +67,14 @@ EditChartDialog::okClicked()
 {
     // mustn't be blank
     if (chartName->text() == "") {
-        QMessageBox::warning( 0, "Entry Error", "Name is blank");
+        QMessageBox::warning( 0, tr("Entry Error"), tr("Name is blank"));
         return;
     }
 
     // does it already exist?
     foreach (LTMSettings chart, presets) {
         if (chart.name == chartName->text()) {
-            QMessageBox::warning( 0, "Entry Error", "Chart already exists");
+            QMessageBox::warning( 0, tr("Entry Error"), tr("Chart already exists"));
             return;
         }
     }
@@ -88,219 +89,12 @@ EditChartDialog::cancelClicked()
 }
 
 /*----------------------------------------------------------------------
- * CHART MANAGER DIALOG
- *--------------------------------------------------------------------*/
-ChartManagerDialog::ChartManagerDialog(MainWindow *mainWindow, QList<LTMSettings>*presets) :
-    QDialog(mainWindow, Qt::Dialog), mainWindow(mainWindow), presets(presets)
-{
-    setWindowTitle(tr("Manage Charts"));
-
-    QGridLayout *mainLayout = new QGridLayout(this);
-
-    importButton = new QPushButton(tr("Import..."));
-    exportButton = new QPushButton(tr("Export..."));
-    upButton = new QPushButton(tr("Move up"));
-    downButton = new QPushButton(tr("Move down"));
-    renameButton = new QPushButton(tr("Rename"));
-    deleteButton = new QPushButton(tr("Delete"));
-
-    QVBoxLayout *actionButtons = new QVBoxLayout;
-    actionButtons->addWidget(renameButton);
-    actionButtons->addWidget(deleteButton);
-    actionButtons->addWidget(upButton);
-    actionButtons->addWidget(downButton);
-    actionButtons->addStretch();
-    actionButtons->addWidget(importButton);
-    actionButtons->addWidget(exportButton);
-
-    charts = new QTreeWidget;
-    charts->headerItem()->setText(0, "Charts");
-    charts->setColumnCount(1);
-    charts->setSelectionMode(QAbstractItemView::SingleSelection);
-    charts->setEditTriggers(QAbstractItemView::SelectedClicked); // allow edit
-    charts->setIndentation(0);
-    foreach(LTMSettings chart, *presets) {
-        QTreeWidgetItem *add;
-        add = new QTreeWidgetItem(charts->invisibleRootItem());
-        add->setFlags(add->flags() | Qt::ItemIsEditable);
-        add->setText(0, chart.name);
-    }
-    charts->setCurrentItem(charts->invisibleRootItem()->child(0));
-
-    // Cancel/ OK Buttons
-    QHBoxLayout *buttonLayout = new QHBoxLayout;
-    buttonLayout->addStretch();
-    okButton = new QPushButton(tr("&OK"), this);
-    cancelButton = new QPushButton(tr("&Cancel"), this);
-    buttonLayout->addWidget(cancelButton);
-    buttonLayout->addWidget(okButton);
-
-    mainLayout->addWidget(charts, 0,0);
-    mainLayout->addLayout(actionButtons, 0,1);
-    mainLayout->addLayout(buttonLayout,1,0);
-
-    // seems reasonable...
-    setMinimumHeight(350);
-
-    // connect up slots
-    connect(okButton, SIGNAL(clicked()), this, SLOT(okClicked()));
-    connect(cancelButton, SIGNAL(clicked()), this, SLOT(cancelClicked()));
-    connect(upButton, SIGNAL(clicked()), this, SLOT(upClicked()));
-    connect(downButton, SIGNAL(clicked()), this, SLOT(downClicked()));
-    connect(renameButton, SIGNAL(clicked()), this, SLOT(renameClicked()));
-    connect(deleteButton, SIGNAL(clicked()), this, SLOT(deleteClicked()));
-    connect(importButton, SIGNAL(clicked()), this, SLOT(importClicked()));
-    connect(exportButton, SIGNAL(clicked()), this, SLOT(exportClicked()));
-}
-
-void
-ChartManagerDialog::okClicked()
-{
-    // take the edited versions of the name first
-    for(int i=0; i<charts->invisibleRootItem()->childCount(); i++)
-        (*presets)[i].name = charts->invisibleRootItem()->child(i)->text(0);
-
-    accept();
-}
-
-void
-ChartManagerDialog::cancelClicked()
-{
-    reject();
-}
-
-void
-ChartManagerDialog::importClicked()
-{
-    QFileDialog existing(this);
-    existing.setFileMode(QFileDialog::ExistingFile);
-    existing.setNameFilter(tr("Chart File (*.xml)"));
-    if (existing.exec()){
-        // we will only get one (ExistingFile not ExistingFiles)
-        QStringList filenames = existing.selectedFiles();
-
-        if (QFileInfo(filenames[0]).exists()) {
-
-            QList<LTMSettings> imported;
-            QFile chartsFile(filenames[0]);
-
-            // setup XML processor
-            QXmlInputSource source( &chartsFile );
-            QXmlSimpleReader xmlReader;
-            LTMChartParser (handler);
-            xmlReader.setContentHandler(&handler);
-            xmlReader.setErrorHandler(&handler);
-
-            // parse and get return values
-            xmlReader.parse(source);
-            imported = handler.getSettings();
-
-            // now append to the QList and QTreeWidget
-            *presets += imported;
-            foreach (LTMSettings chart, imported) {
-                QTreeWidgetItem *add;
-                add = new QTreeWidgetItem(charts->invisibleRootItem());
-                add->setFlags(add->flags() | Qt::ItemIsEditable);
-                add->setText(0, chart.name);
-            }
-
-        } else {
-            // oops non existant - does this ever happen?
-            QMessageBox::warning( 0, "Entry Error", QString("Selected file (%1) does not exist").arg(filenames[0]));
-        }
-    }
-}
-
-void
-ChartManagerDialog::exportClicked()
-{
-    QFileDialog newone(this);
-    newone.setFileMode(QFileDialog::AnyFile);
-    newone.setNameFilter(tr("Chart File (*.xml)"));
-    if (newone.exec()){
-        // we will only get one (ExistingFile not ExistingFiles)
-        QStringList filenames = newone.selectedFiles();
-
-        // if exists confirm overwrite
-        if (QFileInfo(filenames[0]).exists()) {
-            QMessageBox msgBox;
-            msgBox.setText(QString("The selected file (%1) exists.").arg(filenames[0]));
-            msgBox.setInformativeText("Do you want to overwrite it?");
-            msgBox.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
-            msgBox.setDefaultButton(QMessageBox::Cancel);
-            msgBox.setIcon(QMessageBox::Warning);
-            if (msgBox.exec() != QMessageBox::Ok)
-                return;
-        }
-        LTMChartParser::serialize(filenames[0], *presets);
-    }
-}
-
-void
-ChartManagerDialog::upClicked()
-{
-    if (charts->currentItem()) {
-        int index = charts->invisibleRootItem()->indexOfChild(charts->currentItem());
-        if (index == 0) return; // its at the top already
-
-        // movin on up!
-        QTreeWidgetItem *moved;
-        charts->invisibleRootItem()->insertChild(index-1, moved=charts->invisibleRootItem()->takeChild(index));
-        charts->setCurrentItem(moved);
-        LTMSettings save = (*presets)[index];
-        presets->removeAt(index);
-        presets->insert(index-1, save);
-    }
-}
-
-void
-ChartManagerDialog::downClicked()
-{
-    if (charts->currentItem()) {
-        int index = charts->invisibleRootItem()->indexOfChild(charts->currentItem());
-        if (index == (charts->invisibleRootItem()->childCount()-1)) return; // its at the bottom already
-
-        // movin on up!
-        QTreeWidgetItem *moved;
-        charts->invisibleRootItem()->insertChild(index+1, moved=charts->invisibleRootItem()->takeChild(index));
-        charts->setCurrentItem(moved);
-        LTMSettings save = (*presets)[index];
-        presets->removeAt(index);
-        presets->insert(index+1, save);
-    }
-}
-
-void
-ChartManagerDialog::renameClicked()
-{
-    // which one is selected?
-    if (charts->currentItem()) charts->editItem(charts->currentItem(), 0);
-}
-
-void
-ChartManagerDialog::deleteClicked()
-{
-    // must have at least 1 child
-    if (charts->invisibleRootItem()->childCount() == 1) {
-        QMessageBox::warning(0, "Error", "You must have at least one chart");
-        return;
-
-    } else if (charts->currentItem()) {
-        int index = charts->invisibleRootItem()->indexOfChild(charts->currentItem());
-
-        // zap!
-        presets->removeAt(index);
-        delete charts->invisibleRootItem()->takeChild(index);
-    }
-}
-
-/*----------------------------------------------------------------------
  * Write to charts.xml
  *--------------------------------------------------------------------*/
 void
 LTMSettings::writeChartXML(QDir home, QList<LTMSettings> charts)
 {
-    LTMChartParser::serialize(QString(home.path() + "/charts.xml"), charts);
+    LTMChartParser::serialize(QString(home.canonicalPath() + "/charts.xml"), charts);
 }
 
 
@@ -309,22 +103,244 @@ LTMSettings::writeChartXML(QDir home, QList<LTMSettings> charts)
  *--------------------------------------------------------------------*/
 
 void
-LTMSettings::readChartXML(QDir home, QList<LTMSettings> &charts)
+LTMSettings::readChartXML(QDir home, bool useMetricUnits, QList<LTMSettings> &charts)
 {
-    QFileInfo chartFile(home.absolutePath() + "/charts.xml");
+    QFileInfo chartFile(home.canonicalPath() + "/charts.xml");
     QFile chartsFile;
+    bool builtIn;
 
     // if it doesn't exist use our built-in default version
-    if (chartFile.exists())
+    if (chartFile.exists()) {
         chartsFile.setFileName(chartFile.filePath());
-    else
+        builtIn = false;
+    }
+    else {
         chartsFile.setFileName(":/xml/charts.xml");
+        builtIn = true;
+    }
 
     QXmlInputSource source( &chartsFile );
     QXmlSimpleReader xmlReader;
-    LTMChartParser( handler );
+    LTMChartParser handler;
     xmlReader.setContentHandler(&handler);
     xmlReader.setErrorHandler(&handler);
     xmlReader.parse( source );
     charts = handler.getSettings();
+
+    // translate only once and only if the built-in version is imported
+    if (builtIn) {
+        // create translation maps (for names and units)
+        QMap<QString, QString> nMap;  // names
+        QMap<QString, QString> uMap;  // unit of measurement
+        LTMTool::getMetricsTranslationMap(nMap, uMap, useMetricUnits);
+
+        // now run over all chart metrics and map - name and unit
+        for (int i=0; i<charts.count(); i++) {
+            for (int j=0; j<charts[i].metrics.count(); j++){
+                // no map and substitute
+                QString n  = nMap.value(charts[i].metrics[j].symbol, charts[i].metrics[j].uname);
+                QString u  = uMap.value(charts[i].metrics[j].symbol, charts[i].metrics[j].uunits);
+                // set name, unit only if there was text before
+                if (charts[i].metrics[j].name != "") charts[i].metrics[j].name = n;
+                charts[i].metrics[j].uname = n;
+                if (charts[i].metrics[j].units != "") charts[i].metrics[j].units = u;
+                charts[i].metrics[j].units = charts[i].metrics[j].uunits = u;
+            }
+        }
+    }
+}
+
+
+
+/*----------------------------------------------------------------------
+ * Marshall/Unmarshall to DataStream to store as a QVariant
+ *----------------------------------------------------------------------*/
+QDataStream &operator<<(QDataStream &out, const LTMSettings &settings)
+{
+    // 4.6 - 4.9 all the same
+    out.setVersion(QDataStream::Qt_4_6);
+
+    // all the basic fields first
+    out<<settings.name;
+    out<<settings.title;
+    out<<settings.start;
+    out<<settings.end;
+    out<<settings.groupBy;
+    out<<settings.shadeZones;
+    out<<settings.legend;
+    out<<settings.field1;
+    out<<settings.field2;
+    out<<int(-1);
+    out<<int(12); 
+    out<<settings.metrics.count();
+    foreach(MetricDetail metric, settings.metrics) {
+        bool discard = false;
+        out<<metric.type;
+        out<<metric.stack;
+        out<<metric.symbol;
+        out<<metric.name;
+        out<<metric.uname;
+        out<<metric.uunits;
+        out<<metric.smooth;
+        out<<discard; // was metric.trend but that was deprecated
+        out<<metric.topN;
+        out<<metric.topOut;
+        out<<metric.baseline;
+        out<<metric.showOnPlot;
+        out<<metric.filter;
+        out<<metric.from;
+        out<<metric.to;
+        out<<static_cast<int>(metric.curveStyle-1); // curveStyle change between qwt 5 and 6
+        out<<static_cast<int>(metric.symbolStyle);
+        out<<metric.penColor;
+        out<<metric.penAlpha;
+        out<<metric.penWidth;
+        out<<metric.penStyle;
+        out<<metric.brushColor;
+        out<<metric.brushAlpha;
+        out<<metric.fillCurve;
+        out<<metric.duration;
+        out<<metric.duration_units;
+        out<<metric.bestSymbol;
+        out<<static_cast<int>(metric.series);
+        out<<metric.trendtype;
+        out<<metric.labels;
+        out<<metric.lowestN;
+        out<<metric.model;
+        out<<metric.estimate;
+        out<<metric.estimateDuration;
+        out<<metric.estimateDuration_units;
+        out<<metric.wpk;
+        out<<metric.stressType;
+    }
+    out<<settings.showData;
+    out<<settings.stack;
+    out<<settings.stackWidth;
+    return out;
+}
+
+QDataStream &operator>>(QDataStream &in, LTMSettings &settings)
+{
+    // 4.6 - 4.9 all the same
+    in.setVersion(QDataStream::Qt_4_6);
+
+    RideMetricFactory &factory = RideMetricFactory::instance();
+    int counter=0;
+    int version=0;
+
+    // all the basic fields first
+    in>>settings.name;
+    in>>settings.title;
+    in>>settings.start;
+    in>>settings.end;
+    in>>settings.groupBy;
+    in>>settings.shadeZones;
+    in>>settings.legend;
+    in>>settings.field1;
+    in>>settings.field2;
+    in>>counter;
+
+    // we now add version number before the counter
+    // if counter is -1 -- to make settings extensible
+    if (counter == -1) {
+        in>>version;
+        in>>counter;
+    }
+while(counter-- && !in.atEnd()) {
+        bool discard;
+        MetricDetail m;
+        in>>m.type;
+        in>>m.stack;
+        in>>m.symbol;
+        in>>m.name;
+        in>>m.uname;
+        in>>m.uunits;
+        in>>m.smooth;
+        in>>discard; // was m.trend but that was deprecated
+        if (discard) m.trendtype = 1; // will be overwritten below if not old settings
+        in>>m.topN;
+        in>>m.topOut;
+        in>>m.baseline;
+        in>>m.showOnPlot;
+        in>>m.filter;
+        in>>m.from;
+        in>>m.to;
+        int x;
+        in>> x; m.curveStyle = static_cast<QwtPlotCurve::CurveStyle>(x+1);  // curveStyle change between qwt 5 and 6
+        in>> x; m.symbolStyle = static_cast<QwtSymbol::Style>(x);
+        in>>m.penColor;
+        in>>m.penAlpha;
+        in>>m.penWidth;
+        in>>m.penStyle;
+        in>>m.brushColor;
+        in>>m.brushAlpha;
+
+        // added curve filling in v1.0
+        if (version >=1) {
+            in>>m.fillCurve;
+        } else {
+            m.fillCurve = false;
+        }
+
+        if (version >= 2) { // get bests info
+            in>>m.duration;
+            in>>m.duration_units;
+            in>>m.bestSymbol;
+            in>>x;
+            m.series = static_cast<RideFile::SeriesType>(x);
+        }
+
+        if (version >= 3) { // trendtype added
+            in>>m.trendtype;
+        } else {
+            m.trendtype = 0; // default!
+        }
+
+        
+        if (version >= 5) {
+            in >>m.labels;
+        }
+
+        if (version >= 8) {
+            in >>m.lowestN;
+        }
+
+        if (version >= 9) {
+            in >> m.model;
+            in >> m.estimate;
+        } else {
+            m.model = "";
+            m.estimate = 0;
+        }
+        if (version >= 10) {
+            in >> m.estimateDuration;
+            in >> m.estimateDuration_units;
+        }
+        if (version >= 11) {
+            in >> m.wpk;
+        }
+        if (version >= 12) {
+            in >> m.stressType;
+        }
+
+        bool keep=true;
+        // check for deprecated things and set keep=false if
+        // we don't support this any more !
+        if (m.type == METRIC_MEASURE) keep = false;
+        // more keep checks could be added here
+        if (keep) {
+            // get a metric pointer (if it exists)
+            m.metric = factory.rideMetric(m.symbol);
+            settings.metrics.append(m);
+        }
+    }
+    if (version >= 4) in >> settings.showData;
+    if (version >= 6) {
+        in >>settings.stack;
+    }
+    if (version >= 7) {
+        in >>settings.stackWidth;
+    }
+
+    return in;
 }

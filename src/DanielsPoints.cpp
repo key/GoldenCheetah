@@ -18,10 +18,8 @@
 
 #include "RideMetric.h"
 #include "Zones.h"
-#include <QObject>
-#include <math.h>
-
-#define tr(s) QObject::tr(s)
+#include <cmath>
+#include <QApplication>
 
 // The idea: Fit a curve to the points system in Table 2.2 of "Daniel's Running
 // Formula", Second Edition, assume that power at VO2Max is 1.2 * FTP, further
@@ -33,6 +31,7 @@
 
 
 class DanielsPoints : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(DanielsPoints)
 
     double score;
     void inc(double secs, double watts, double cp) {
@@ -46,13 +45,18 @@ class DanielsPoints : public RideMetric {
     DanielsPoints() : score(0.0)
     {
         setSymbol("daniels_points");
+        setInternalName("Daniels Points");
+    }
+    void initialize() {
         setName(tr("Daniels Points"));
         setMetricUnits("");
         setImperialUnits("");
         setType(RideMetric::Total);
     }
-    void compute(const RideFile *ride, const Zones *zones,
-                 int zoneRange, const HrZones *, int, const QHash<QString,RideMetric*> &) {
+    void compute(const RideFile *ride, const Zones *zones, int zoneRange,
+                const HrZones *, int,
+                const QHash<QString,RideMetric*> &,
+                const Context *) {
         if (!zones || zoneRange < 0) {
             setValue(0);
             return;
@@ -98,6 +102,7 @@ class DanielsPoints : public RideMetric {
 const double DanielsPoints::K = 100.0 / 3600.0;
 
 class DanielsEquivalentPower : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(DanielsEquivalentPower)
     double watts;
 
     public:
@@ -105,14 +110,19 @@ class DanielsEquivalentPower : public RideMetric {
     DanielsEquivalentPower() : watts(0.0)
     {
         setSymbol("daniels_equivalent_power");
+        setInternalName("Daniels EqP");
+    }
+    void initialize() {
         setName(tr("Daniels EqP"));
         setMetricUnits(tr("watts"));
         setImperialUnits(tr("watts"));
         setType(RideMetric::Average);
     }
 
-    void compute(const RideFile *, const Zones *zones, int zoneRange, const HrZones *, int,
-                 const QHash<QString,RideMetric*> &deps)
+    void compute(const RideFile *, const Zones *zones, int zoneRange,
+                const HrZones *, int,
+                 const QHash<QString,RideMetric*> &deps,
+                const Context *)
     {
         if (!zones || zoneRange < 0) {
             setValue(0);
@@ -122,12 +132,16 @@ class DanielsEquivalentPower : public RideMetric {
         double cp = zones->getCP(zoneRange);
         assert(deps.contains("daniels_points"));
         assert(deps.contains("time_riding"));
+        assert(deps.contains("workout_time"));
         const RideMetric *danielsPoints = deps.value("daniels_points");
         const RideMetric *timeRiding = deps.value("time_riding");
+        const RideMetric *workoutTime = deps.value("workout_time");
         assert(danielsPoints);
         assert(timeRiding);
+        assert(workoutTime);
         double score = danielsPoints->value(true);
-        double secs = timeRiding->value(true);
+        double secs = timeRiding->value(true) ? timeRiding->value(true) :
+                                                workoutTime->value(true);
         watts = secs == 0.0 ? 0.0 : cp * pow(score / DanielsPoints::K / secs, 0.25);
 
         setValue(watts);
@@ -139,6 +153,7 @@ static bool added() {
     RideMetricFactory::instance().addMetric(DanielsPoints());
     QVector<QString> deps;
     deps.append("time_riding");
+    deps.append("workout_time");
     deps.append("daniels_points");
     RideMetricFactory::instance().addMetric(DanielsEquivalentPower(), &deps);
     return true;

@@ -31,6 +31,7 @@
 
 #ifndef _GC_Computrainer_h
 #define _GC_Computrainer_h 1
+#include "GoldenCheetah.h"
 
 #include <QString>
 #include <QDebug>
@@ -46,6 +47,9 @@
 #include <termios.h> // unix!!
 #include <unistd.h> // unix!!
 #include <sys/ioctl.h>
+#ifndef N_TTY // for OpenBSD, this is a hack XXX
+#define N_TTY 0
+#endif
 #endif
 
 #include <stdio.h>
@@ -82,8 +86,9 @@
 #define CT_NONE         0x80
 
 /* Device operation mode */
-#define CT_ERGOMODE 0x01
-#define CT_SSMODE   0x02
+#define CT_ERGOMODE    0x01
+#define CT_SSMODE      0x02
+#define CT_CALIBRATE   0x04
 
 /* UI operation mode */
 #define UI_MANUAL 0x01  // using +/- keys to adjust
@@ -132,7 +137,7 @@ public:
     bool isHRConnected();
     bool isCADConnected();
     void getTelemetry(double &Power, double &HeartRate, double &Cadence, double &Speed,
-                        double &RRC, bool &calibration, int &Buttons, int &Status);
+                        double &RRC, bool &calibration, int &Buttons, uint8_t *ss, int &Status);
     void getSpinScan(double spinData[]);
     int getMode();
     double getGradient();
@@ -166,10 +171,10 @@ private:
     volatile double devicePower;            // current output power in Watts
     volatile double deviceHeartRate;        // current heartrate in BPM
     volatile double deviceCadence;          // current cadence in RPM
-    volatile double deviceSpeed;            // current speef in KPH
+    volatile double deviceSpeed;            // current speed in KPH
     volatile double deviceRRC;              // calibrated Rolling Resistance
     volatile bool   deviceCalibrated;       // is it calibrated?
-    volatile double spinData[24];           // SS values only in SS_MODE
+    volatile uint8_t spinScan[24];           // SS values only in SS_MODE
     volatile int    deviceButtons;          // Button status
     volatile bool   deviceHRConnected;      // HR jack is connected
     volatile bool   deviceCADConnected;     // Cadence jack is connected

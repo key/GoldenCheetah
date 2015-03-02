@@ -18,15 +18,24 @@
 
 #ifndef _GC_BestIntervalDialog_h
 #define _GC_BestIntervalDialog_h 1
+#include "GoldenCheetah.h"
 
 #include <QtGui>
+#include <QTableWidget>
+#include <QCheckBox>
+#include <QDialog>
+#include <QHeaderView>
+#include <QMessageBox>
+#include <QLabel>
 
-class MainWindow;
+class Context;
 class RideFile;
 
 class BestIntervalDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
@@ -36,7 +45,7 @@ class BestIntervalDialog : public QDialog
                 start(start), stop(stop), avg(avg) {}
         };
 
-        BestIntervalDialog(MainWindow *mainWindow);
+        BestIntervalDialog(Context *context);
 
         static void findBests(const RideFile *ride, double windowSizeSecs,
                               int maxIntervals, QList<BestInterval> &results);
@@ -48,7 +57,7 @@ class BestIntervalDialog : public QDialog
 
     private:
 
-        MainWindow *mainWindow;
+        Context *context;
         QPushButton *findButton, *doneButton, *addButton;
         QDoubleSpinBox *hrsSpinBox, *minsSpinBox, *secsSpinBox, *countSpinBox;
         QTableWidget *resultsTable;

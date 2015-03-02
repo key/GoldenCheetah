@@ -18,11 +18,13 @@
 
 #ifndef _GC_AerolabWindow_h
 #define _GC_AerolabWindow_h 1
+#include "GoldenCheetah.h"
 
 #include <QtGui>
+#include <QMessageBox>
 
 class Aerolab;
-class MainWindow;
+class Context;
 class QCheckBox;
 class QwtPlotZoomer;
 class QwtPlotPicker;
@@ -31,52 +33,69 @@ class QLCDNumber;
 class RideItem;
 class IntervalItem;
 
-class AerolabWindow : public QWidget {
+class AerolabWindow : public GcWindow {
   Q_OBJECT
+  G_OBJECT
+
 
   public:
-  AerolabWindow(MainWindow *mainWindow);
+  AerolabWindow(Context *context);
   void setData(RideItem *ride);
-  void zoomInterval(IntervalItem *); // zoom into a specified interval
+  double getCanvasTop() const;
+  double getCanvasBottom() const;
 
+  QSlider *eoffsetSlider;
 
   public slots:
-  void setCrrFromSlider();
-  void setCdaFromSlider();
-  void setTotalMassFromSlider();
-  void setRhoFromSlider();
-  void setEtaFromSlider();
-  void setEoffsetFromSlider();
-  void rideSelected();
-  void configChanged();
 
+  void setCrrFromSlider();
+  void setCrrFromText(const QString text);
+  void setCdaFromSlider();
+  void setCdaFromText(const QString text);
+  void setTotalMassFromSlider();
+  void setTotalMassFromText(const QString text);
+  void setRhoFromSlider();
+  void setRhoFromText(const QString text);
+  void setEtaFromSlider();
+  void setEtaFromText(const QString text);
+  void setEoffsetFromSlider();
+  void setEoffsetFromText(const QString text);
+  void doEstCdACrr();
+  void setAutoEoffset(int value);
+  void setConstantAlt(int value);
+  void setByDistance(int value);
+  void rideSelected();
+  void zoomChanged();
+  void zoomInterval(IntervalItem *); // zoom into a specified interval
+  void configChanged(qint32);
+  void intervalSelected();
 
   protected slots:
 
   protected:
-  MainWindow  *mainWindow;
+  Context *context;
   Aerolab *aerolab;
   QwtPlotZoomer *allZoomer;
 
   // Bike parameter controls:
   QSlider *crrSlider;
   QLineEdit *crrLineEdit;
-  QLCDNumber *crrQLCDNumber;
+  //QLCDNumber *crrQLCDNumber;
   QSlider *cdaSlider;
   QLineEdit *cdaLineEdit;
-  QLCDNumber *cdaQLCDNumber;
+  //QLCDNumber *cdaQLCDNumber;
   QSlider *mSlider;
   QLineEdit *mLineEdit;
-  QLCDNumber *mQLCDNumber;
+  //QLCDNumber *mQLCDNumber;
   QSlider *rhoSlider;
   QLineEdit *rhoLineEdit;
-  QLCDNumber *rhoQLCDNumber;
+  //QLCDNumber *rhoQLCDNumber;
   QSlider *etaSlider;
   QLineEdit *etaLineEdit;
-  QLCDNumber *etaQLCDNumber;
-  QSlider *eoffsetSlider;
+  //QLCDNumber *etaQLCDNumber;
+
   QLineEdit *eoffsetLineEdit;
-  QLCDNumber *eoffsetQLCDNumber;
+  //QLCDNumber *eoffsetQLCDNumber;
 
 };
 

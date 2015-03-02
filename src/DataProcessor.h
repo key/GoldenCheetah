@@ -18,14 +18,22 @@
 
 #ifndef _DataProcessor_h
 #define _DataProcessor_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 #include "RideFileCommand.h"
 #include "RideItem.h"
+
+#include <QtGui>
+#include <QWidget>
+#include <QDialog>
 #include <QDate>
 #include <QDir>
+#include <QLabel>
 #include <QFile>
 #include <QList>
+#include <QTextEdit>
+#include <QLineEdit>
 #include <QMap>
 #include <QVector>
 
@@ -45,14 +53,13 @@
 // dataprocessor on the current ride and is called from the mainWindow menus
 //
 
-
-#include <QtGui>
-
 // every data processor must supply a configuration Widget
 // when its processorConfig member is called
 class DataProcessorConfig : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
         DataProcessorConfig(QWidget *parent=0) : QWidget(parent) {}
@@ -70,6 +77,7 @@ class DataProcessor
         virtual ~DataProcessor() {}
         virtual bool postProcess(RideFile *, DataProcessorConfig*settings=0) = 0;
         virtual DataProcessorConfig *processorConfig(QWidget *parent) = 0;
+        virtual QString name() = 0; // Localized Name for user interface
 };
 
 // all data processors
@@ -84,19 +92,20 @@ class DataProcessorFactory {
     public:
 
         static DataProcessorFactory &instance();
-
         bool registerProcessor(QString name, DataProcessor *processor);
         QMap<QString,DataProcessor*> getProcessors() const { return processors; }
         bool autoProcess(RideFile *); // run auto processes (after open rideFile)
 };
 
-class MainWindow;
+class Context;
 class ManualDataProcessorDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        ManualDataProcessorDialog(MainWindow *, QString, RideItem *);
+        ManualDataProcessorDialog(Context *, QString, RideItem *);
 
     private slots:
         void cancelClicked();
@@ -104,7 +113,7 @@ class ManualDataProcessorDialog : public QDialog
 
     private:
 
-        MainWindow *main;
+        Context *context;
         RideItem *ride;
         DataProcessor *processor;
         DataProcessorConfig *config;

@@ -2,7 +2,7 @@
  * Qwt Widget Library
  * Copyright (C) 1997   Josef Wilgen
  * Copyright (C) 2002   Uwe Rathmann
- * 
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the Qwt License, Version 1.0
  *****************************************************************************/
@@ -11,9 +11,9 @@
 #define QWT_PLOT_MAGNIFIER_H 1
 
 #include "qwt_global.h"
+#include "qwt_axis_id.h"
 #include "qwt_magnifier.h"
 
-class QwtPlotCanvas;
 class QwtPlot;
 
 /*!
@@ -32,20 +32,20 @@ class QWT_EXPORT QwtPlotMagnifier: public QwtMagnifier
     Q_OBJECT
 
 public:
-    explicit QwtPlotMagnifier(QwtPlotCanvas *);
+    explicit QwtPlotMagnifier( QWidget * );
     virtual ~QwtPlotMagnifier();
 
-    void setAxisEnabled(int axis, bool on);
-    bool isAxisEnabled(int axis) const;
+    void setAxisEnabled( QwtAxisId axisPos, bool on );
+    bool isAxisEnabled( QwtAxisId ) const;
 
-    QwtPlotCanvas *canvas();
-    const QwtPlotCanvas *canvas() const;
+    QWidget *canvas();
+    const QWidget *canvas() const;
 
     QwtPlot *plot();
     const QwtPlot *plot() const;
 
 protected:
-    virtual void rescale(double factor);
+    virtual void rescale( double factor );
 
 private:
     class PrivateData;

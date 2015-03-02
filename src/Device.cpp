@@ -1,16 +1,16 @@
-/* 
+/*
  * Copyright (c) 2008 Sean C. Rhea (srhea@srhea.net)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, write to the Free Software Foundation, Inc., 51
  * Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -18,7 +18,7 @@
 
 #include "Device.h"
 
-typedef QMap<QString,Device*> DevicesMap;
+typedef QMap<QString,DevicesPtr> DevicesMap;
 
 static DevicesMap *devicesPtr;
 
@@ -26,28 +26,62 @@ inline DevicesMap &
 devices()
 {
     if (devicesPtr == NULL)
-        devicesPtr = new QMap<QString,Device*>;
+        devicesPtr = new QMap<QString,DevicesPtr>;
     return *devicesPtr;
 }
 
+Device::~Device()
+{
+    if( dev->isOpen() )
+        dev->close();
+}
+
+bool
+Device::preview( QString &err )
+{
+    (void) err;
+
+    return true;
+}
+
+QList<DeviceRideItemPtr> &Device::rides()
+{
+    return rideList;
+}
+
+bool
+Device::cleanup( QString &err )
+{
+    (void) dev;
+
+    err = tr("cleanup is not supported");
+
+    return false;
+}
+
+void
+Device::cancelled()
+{
+    m_Cancelled = true;
+}
+
+
 QList<QString>
-Device::deviceTypes()
+Devices::typeNames()
 {
     return devices().keys();
 }
 
-Device &
-Device::device(const QString &deviceType)
+DevicesPtr
+Devices::getType(const QString &deviceTypeName )
 {
-    assert(devices().contains(deviceType));
-    return *devices().value(deviceType);
+    return devices().value(deviceTypeName);
 }
 
 bool
-Device::addDevice(const QString &deviceType, Device *device)
+Devices::addType(const QString &deviceTypeName, DevicesPtr p )
 {
-    assert(!devices().contains(deviceType));
-    devices().insert(deviceType, device);
+    devices().insert(deviceTypeName, p);
     return true;
 }
- 
+

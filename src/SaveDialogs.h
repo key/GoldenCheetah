@@ -18,19 +18,28 @@
 
 #ifndef _GC_SaveDialogs_h
 #define _GC_SaveDialogs_h 1
+#include "GoldenCheetah.h"
 
 #include <QtGui>
 #include <QDialog>
+#include <QCheckBox>
+#include <QLabel>
+#include <QTableWidget>
+#include <QHeaderView>
+
 #include "RideItem.h"
+#include "Context.h"
 
 class MainWindow;
 
 class SaveSingleDialogWidget : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        SaveSingleDialogWidget(MainWindow *, RideItem *);
+        SaveSingleDialogWidget(MainWindow *, Context *context, RideItem *);
 
     public slots:
         void saveClicked();
@@ -41,6 +50,7 @@ class SaveSingleDialogWidget : public QDialog
     private:
 
         MainWindow *mainWindow;
+        Context *context;
         RideItem   *rideItem;
         QPushButton *saveButton, *abandonButton, *cancelButton;
         QCheckBox *warnCheckBox;
@@ -50,9 +60,11 @@ class SaveSingleDialogWidget : public QDialog
 class SaveOnExitDialogWidget : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        SaveOnExitDialogWidget(MainWindow *, QList<RideItem*>);
+        SaveOnExitDialogWidget(MainWindow *, Context *context, QList<RideItem*>);
 
     public slots:
         void saveClicked();
@@ -62,6 +74,7 @@ class SaveOnExitDialogWidget : public QDialog
 
     private:
         MainWindow *mainWindow;
+        Context *context;
         QList<RideItem *>dirtyList;
         QPushButton *saveButton, *abandonButton, *cancelButton;
         QCheckBox *exitWarnCheckBox;

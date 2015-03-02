@@ -18,31 +18,46 @@
 
 #ifndef _GC_RideEditor_h
 #define _GC_RideEditor_h 1
+#include "GoldenCheetah.h"
 
-#include "MainWindow.h"
+#include "Context.h"
 #include "RideItem.h"
 #include "RideFile.h"
 #include "RideFileCommand.h"
 #include "RideFileTableModel.h"
+
 #include <QtGui>
+#include <QGroupBox>
+#include <QCheckBox>
+#include <QTableView>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QMessageBox>
+#include <QDesktopWidget>
+#include <QToolBar>
+#include <QItemDelegate>
 
 class EditorData;
 class CellDelegate;
 class RideModel;
 class FindDialog;
+class AnomalyDialog;
 class PasteSpecialDialog;
 
-class RideEditor : public QWidget
+class RideEditor : public GcChartWindow
 {
     Q_OBJECT
+    G_OBJECT
+
 
     friend class ::FindDialog;
+    friend class ::AnomalyDialog;
     friend class ::PasteSpecialDialog;
     friend class ::CellDelegate;
 
     public:
 
-        RideEditor(MainWindow *);
+        RideEditor(Context *);
 
         // item delegate uses this
         QTableView *table;
@@ -73,7 +88,10 @@ class RideEditor : public QWidget
         void undo();
         void redo();
         void find();
-        void check();
+        void anomalies();
+
+        // anomaly list
+        void anomalySelected();
 
         // context menu functions
         void smooth();
@@ -87,6 +105,9 @@ class RideEditor : public QWidget
         void pasteSpecial();
         void clear();
 
+        // need to hide find tool when we hide
+        void hideEvent(QHideEvent *event);
+
         // trap QTableView signals
         bool eventFilter(QObject *, QEvent *);
         void cellMenu(const QPoint &);
@@ -97,7 +118,7 @@ class RideEditor : public QWidget
         void endCommand(bool,RideCommand*);
 
         // GC signals
-        void configChanged();
+        void configChanged(qint32);
         void rideSelected();
         void intervalSelected();
         void rideDirty();
@@ -112,14 +133,14 @@ class RideEditor : public QWidget
         RideItem *ride;
         RideFileTableModel *model;
         QStringList copyHeadings;
+        FindDialog *findTool;
+        AnomalyDialog *anomalyTool;
 
     private:
-        MainWindow *main;
+        Context *context;
 
         bool inLUW;
         QList<QModelIndex> itemselection;
-
-        double DPFSmax, DPFSvariance;
 
         QList<QString> whatColumns();
         QSignalMapper *colMapper;
@@ -155,6 +176,8 @@ class RideModel : public QStandardItemModel
 class CellDelegate : public QItemDelegate
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
     CellDelegate(RideEditor *, QObject *parent = 0);
@@ -184,24 +207,52 @@ private:
 
 };
 
+class AnomalyDialog : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+    public:
+        AnomalyDialog(RideEditor*);
+        ~AnomalyDialog();
+
+        void closeEvent(QCloseEvent*event);
+        QTableWidget *anomalyList;
+
+    public slots:
+        void reject();
+        void check();
+
+    private:
+        RideEditor *rideEditor;
+};
+
 //
 // Dialog for finding values across the ride
 //
-class FindDialog : public QDialog
+class FindDialog : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        FindDialog(RideEditor *, QWidget *parent=0);
+        FindDialog(RideEditor *);
         ~FindDialog();
+
+        void closeEvent(QCloseEvent* event);
 
     private slots:
         void find();
-        void close();
+        void clear();
         void selection();
         void typeChanged(int);
         void dataChanged();
+
+    public slots:
+        void reject();
+        void rideSelected();
 
     private:
         RideEditor *rideEditor;
@@ -209,9 +260,9 @@ class FindDialog : public QDialog
         QComboBox *type;
         QDoubleSpinBox *from, *to;
         QLabel *andLabel;
-
+        QGridLayout *chans;
         QList<QCheckBox*> channels;
-        QPushButton *findButton, *closeButton;
+        QPushButton *findButton, *clearButton;
         QTableWidget *resultsTable;
 
         void clearResultsTable();
@@ -223,6 +274,8 @@ class FindDialog : public QDialog
 class PasteSpecialDialog : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 

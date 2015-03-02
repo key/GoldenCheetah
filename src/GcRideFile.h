@@ -18,12 +18,14 @@
 
 #ifndef _GcRideFile_h
 #define _GcRideFile_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 
 struct GcFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
-    virtual void writeRideFile(const RideFile *ride, QFile &file) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const; 
+    bool writeRideFile(Context *, const RideFile *ride, QFile &file) const;
+    bool hasWrite() const { return true; }
 };
 
 #endif // _GcRideFile_h

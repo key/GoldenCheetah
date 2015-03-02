@@ -11,16 +11,16 @@ class CockpitGrid: public QFrame
     Q_OBJECT
 
 public:
-    CockpitGrid(QWidget *parent = NULL);
+    CockpitGrid( QWidget *parent = NULL );
 
-private slots:
+private Q_SLOTS:
     void changeSpeed();
     void changeGradient();
     void changeAngle();
 
 private:
-    QPalette colorTheme(const QColor &) const;
-    QwtDial *createDial(int pos);
+    QPalette colorTheme( const QColor & ) const;
+    QwtDial *createDial( int pos );
 
     QwtAnalogClock *d_clock;
     SpeedoMeter *d_speedo;

@@ -1,127 +1,218 @@
 #ifndef PAGES_H
 #define PAGES_H
+#include "GoldenCheetah.h"
 
 #include <QtGui>
 #include <QLineEdit>
 #include <QComboBox>
+#include <QGroupBox>
 #include <QCalendarWidget>
 #include <QPushButton>
 #include <QTreeWidget>
 #include <QTableView>
 #include <QModelIndex>
 #include <QCheckBox>
+#include <QListWidget>
 #include <QList>
+#include <QFileDialog>
 #include "Zones.h"
 #include "HrZones.h"
+#include "PaceZones.h"
 #include <QLabel>
 #include <QDateEdit>
 #include <QCheckBox>
 #include <QValidator>
 #include <QGridLayout>
 #include <QProgressDialog>
+#include <QFontComboBox>
 #include "DeviceTypes.h"
 #include "DeviceConfiguration.h"
 #include "RideMetadata.h"
 #include "DataProcessor.h"
-
-#ifdef GC_HAVE_LIBOAUTH
-extern "C" {
-#include <oauth.h>
-}
-#endif
+#include "Season.h"
+#include "SeasonParser.h"
+#include "RideAutoImportConfig.h"
 
 class QGroupBox;
 class QHBoxLayout;
 class QVBoxLayout;
 class ColorsPage;
 class IntervalMetricsPage;
+class ZonePage;
+class HrZonePage;
+class PaceZonePage;
+class SummaryMetricsPage;
 class MetadataPage;
 class KeywordsPage;
 class FieldsPage;
 class Colors;
-class ZonePage;
-class HrZonePage;
 class RiderPage;
+class SeasonsPage;
 
-class ConfigurationPage : public QWidget
+class GeneralPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
     public:
-        ConfigurationPage(MainWindow *main);
-        void saveClicked();
-        QComboBox *langCombo;
-        QComboBox *unitCombo;
-        QComboBox *crankLengthCombo;
-        QCheckBox *allRidesAscending;
-        QCheckBox *garminSmartRecord;
-        QLineEdit *garminHWMarkedit;
-        QLineEdit *BSdaysEdit;
-        QComboBox *bsModeCombo;
-        QLineEdit *workoutDirectory;
-        QPushButton *workoutBrowseButton;
+        GeneralPage(Context *context);
+        qint32 saveClicked();
+
+        QString athleteWAS; // remember what we started with !
 
     public slots:
         void browseWorkoutDir();
+        void browseAthleteDir();
 
     private:
-        MainWindow *main;
-        ColorsPage *colorsPage;
-        IntervalMetricsPage *intervalMetrics;
-        MetadataPage *metadataPage;
+        Context *context;
 
-        QGroupBox *configGroup;
+        QComboBox *langCombo;
+        QComboBox *crankLengthCombo;
+        QComboBox *rimSizeCombo;
+        QComboBox *tireSizeCombo;
+        QComboBox *wbalForm;
+        QCheckBox *garminSmartRecord;
+        QLineEdit *wheelSizeEdit;
+        QLineEdit *garminHWMarkedit;
+        QLineEdit *hystedit;
+        QLineEdit *athleteDirectory;
+        QLineEdit *workoutDirectory;
+        QPushButton *workoutBrowseButton;
+        QPushButton *athleteBrowseButton;
+
         QLabel *langLabel;
-        QLabel *unitLabel;
         QLabel *warningLabel;
         QLabel *workoutLabel;
-        QHBoxLayout *langLayout;
-        QHBoxLayout *unitLayout;
-        QHBoxLayout *warningLayout;
-        QHBoxLayout *workoutLayout;
-        QVBoxLayout *configLayout;
-        QVBoxLayout *mainLayout;
-        QGridLayout *bsDaysLayout;
-        QHBoxLayout *bsModeLayout;
-        QGridLayout *garminLayout;
-};
+        QLabel *athleteLabel;
 
-class CyclistPage : public QWidget
-{
-    Q_OBJECT
-    public:
-        CyclistPage(MainWindow *mainWindow);
-        void saveClicked();
-
-        QLabel *perfManLabel;
-        QLabel *perfManStartLabel;
         QLabel *perfManSTSLabel;
         QLabel *perfManLTSLabel;
-        QLineEdit *perfManStart;
         QLineEdit *perfManSTSavg;
         QLineEdit *perfManLTSavg;
         QCheckBox *showSBToday;
-
-    private:
-        ZonePage *zonePage;
-        HrZonePage *hrZonePage;
-        RiderPage *riderPage;
-        MainWindow *main;
-
-        QGroupBox *cyclistGroup;
-        QVBoxLayout *perfManLayout;
-        QHBoxLayout *perfManStartValLayout;
-        QHBoxLayout *perfManSTSavgLayout;
-        QHBoxLayout *perfManLTSavgLayout;
-        QVBoxLayout *cyclistLayout;
-        QVBoxLayout *mainLayout;
-        QIntValidator *perfManStartValidator;
         QIntValidator *perfManSTSavgValidator;
         QIntValidator *perfManLTSavgValidator;
+
+        struct {
+            int wheel;
+            int crank;
+            float hyst;
+            int wbal;
+            int lts,sts;
+        } b4;
+
+    private slots:
+        void calcWheelSize();
+        void resetWheelSize();
+};
+
+class RiderPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+        RiderPage(QWidget *parent, Context *context);
+        qint32 saveClicked();
+
+    public slots:
+        void chooseAvatar();
+        void unitChanged(int currentIndex);
+
+    private:
+        Context *context;
+
+        QLineEdit *nickname;
+        QDateEdit *dob;
+        QComboBox *sex;
+        QLabel *weightlabel;
+        QLabel *heightlabel;
+        QLabel *wbaltaulabel;
+        QComboBox *unitCombo;
+        QDoubleSpinBox *weight;
+        QDoubleSpinBox *height;
+        QSpinBox *wbaltau;
+        QTextEdit  *bio;
+        QPushButton *avatarButton;
+        QPixmap     avatar;
+
+    struct {
+        int unit;
+        double weight;
+        double height;
+    } b4;
+
+};
+
+class CredentialsPage : public QScrollArea
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+        CredentialsPage(QWidget *parent, Context *context);
+        qint32 saveClicked();
+
+    public slots:
+#ifdef GC_HAVE_KQOAUTH
+        void authoriseTwitter();
+#endif
+        void authoriseStrava();
+        void authoriseCyclingAnalytics();
+        void authoriseGoogleCalendar();
+        void dvCALDAVTypeChanged(int);
+
+    private:
+        Context *context;
+
+        QLineEdit *tpURL; // url for training peaks.com ... http://www.trainingpeaks.com
+        QLineEdit *tpUser;
+        QLineEdit *tpPass;
+        QComboBox *tpType;
+        QPushButton *tpTest;
+
+#ifdef GC_HAVE_KQOAUTH
+        QLineEdit *twitterURL; // url for twitter.com
+        QPushButton *twitterAuthorise;
+#endif
+
+        QComboBox *dvCALDAVType;
+        QPushButton *stravaAuthorise, *stravaAuthorised, *twitterAuthorised;
+        QPushButton *cyclingAnalyticsAuthorise, *cyclingAnalyticsAuthorised;
+        QPushButton *googleCalendarAuthorise, *googleCalendarAuthorised;
+
+        QLineEdit *rideWithGPSUser;
+        QLineEdit *rideWithGPSPass;
+
+        QLineEdit *ttbUser;
+        QLineEdit *ttbPass;
+
+        QLineEdit *veloHeroUser;
+        QLineEdit *veloHeroPass;
+
+        QLineEdit *selUser;
+        QLineEdit *selPass;
+
+        QLineEdit *wiURL; // url for withings
+        QLineEdit *wiUser;
+        QLineEdit *wiPass;
+
+        QLineEdit *webcalURL; // url for webcal calendar (read only, TP.com, Google Calendar)
+
+        QLineEdit *dvURL; // url for calDAV calendar (read/write, e.g. Hotmail)
+        QLineEdit *dvUser;
+        QLineEdit *dvPass;
+        QLineEdit *dvGoogleCalid;
 };
 
 class deviceModel : public QAbstractTableModel
 {
     Q_OBJECT
+    G_OBJECT
+
 
      public:
         deviceModel(QObject *parent=0);
@@ -144,44 +235,36 @@ class deviceModel : public QAbstractTableModel
         bool insertRows(int position, int rows, const QModelIndex &index=QModelIndex());
         bool removeRows(int position, int rows, const QModelIndex &index=QModelIndex());
 
-
         QList<DeviceConfiguration> Configuration;  // the actual data
+
+    public slots:
+        // config changed by wizard so reset
+        void doReset();
+
  };
 
 class DevicePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
     public:
-        DevicePage(QWidget *parent = 0);
-        void setConfigPane();
-        void pairClicked(DeviceConfiguration *, QProgressDialog *);
-
-        QList<DeviceType> devices;
-
-        // GUI Elements
-        QGroupBox *deviceGroup;
-        QLabel *nameLabel;
-        QLineEdit *deviceName;
-
-        QLabel *typeLabel;
-        QComboBox *typeSelector;
-
-        QLabel *specLabel;
-        QLabel *specHint;   // hints at the format for a port spec
-        QLabel *profHint;   // hints at the format for profile info
-        QLineEdit *deviceSpecifier;
-
-        QLabel *profLabel;
-        QLineEdit *deviceProfile;
-
-        QCheckBox *isDefaultDownload;
-        QCheckBox *isDefaultRealtime;
+        DevicePage(QWidget *, Context *);
+        qint32 saveClicked();
 
         QTableView *deviceList;
 
+    public slots:
+        void devaddClicked();
+        void devdelClicked();
+
+    private:
+        Context *context;
+
+        QList<DeviceType> devices;
+
         QPushButton *addButton;
         QPushButton *delButton;
-        QPushButton *pairButton;
 
         QGridLayout *leftLayout;
         QVBoxLayout *rightLayout;
@@ -190,11 +273,53 @@ class DevicePage : public QWidget
         QVBoxLayout *mainLayout;
 
         deviceModel *deviceListModel;
+
+        QCheckBox   *multiCheck;
+};
+
+class BestsMetricsPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+
+        BestsMetricsPage(QWidget *parent = NULL);
+
+    public slots:
+
+        void upClicked();
+        void downClicked();
+        void leftClicked();
+        void rightClicked();
+        void availChanged();
+        void selectedChanged();
+        qint32 saveClicked();
+
+    protected:
+
+        bool changed;
+        QListWidget *availList;
+        QListWidget *selectedList;
+#ifndef Q_OS_MAC
+        QToolButton *upButton;
+        QToolButton *downButton;
+        QToolButton *leftButton;
+        QToolButton *rightButton;
+#else
+        QPushButton *upButton;
+        QPushButton *downButton;
+        QPushButton *leftButton;
+        QPushButton *rightButton;
+#endif
 };
 
 class IntervalMetricsPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
@@ -208,26 +333,73 @@ class IntervalMetricsPage : public QWidget
         void rightClicked();
         void availChanged();
         void selectedChanged();
-        void saveClicked();
+        qint32 saveClicked();
 
     protected:
 
         bool changed;
         QListWidget *availList;
         QListWidget *selectedList;
+#ifndef Q_OS_MAC
+        QToolButton *upButton;
+        QToolButton *downButton;
+        QToolButton *leftButton;
+        QToolButton *rightButton;
+#else
         QPushButton *upButton;
         QPushButton *downButton;
         QPushButton *leftButton;
         QPushButton *rightButton;
+#endif
 };
 
-class KeywordsPage : public QWidget
+class SummaryMetricsPage : public QWidget
 {
     Q_OBJECT
 
     public:
-        KeywordsPage(QWidget *parent, QList<KeywordDefinition>);
+
+        SummaryMetricsPage(QWidget *parent = NULL);
+
+    public slots:
+
+        void upClicked();
+        void downClicked();
+        void leftClicked();
+        void rightClicked();
+        void availChanged();
+        void selectedChanged();
+        qint32 saveClicked();
+
+    protected:
+
+        bool changed;
+        QListWidget *availList;
+        QListWidget *selectedList;
+#ifndef Q_OS_MAC
+        QToolButton *upButton;
+        QToolButton *downButton;
+        QToolButton *leftButton;
+        QToolButton *rightButton;
+#else
+        QPushButton *upButton;
+        QPushButton *downButton;
+        QPushButton *leftButton;
+        QPushButton *rightButton;
+#endif
+};
+
+
+class KeywordsPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+        KeywordsPage(MetadataPage *parent, QList<KeywordDefinition>);
         void getDefinitions(QList<KeywordDefinition>&);
+        QCheckBox *rideBG;
 
     public slots:
         void addClicked();
@@ -236,35 +408,92 @@ class KeywordsPage : public QWidget
         void renameClicked();
         void deleteClicked();
 
+        void pageSelected(); // reset the list of fields when we are selected...
+        void colorfieldChanged();
+
     private:
 
         QTreeWidget *keywords;
 
-        QPushButton *upButton, *downButton, *addButton, *renameButton, *deleteButton;
+#ifndef Q_OS_MAC
+        QToolButton *upButton, *downButton;
+#else
+        QPushButton *upButton, *downButton;
+#endif
+        QPushButton *addButton, *renameButton, *deleteButton;
+        QLabel *fieldLabel;
+        QComboBox *fieldChooser;
+
+        MetadataPage *parent;
 };
 
 class ColorsPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
         ColorsPage(QWidget *parent);
-        void saveClicked();
+        qint32 saveClicked();
 
     public slots:
+        void applyThemeClicked();
+        void tabChanged();
 
     private:
+
+        // General stuff
+        QCheckBox *antiAliased;
+#ifndef Q_OS_MAC // they do scrollbars nicely
+        QCheckBox *rideScroll;
+        QCheckBox *rideHead;
+#endif
+        QDoubleSpinBox *lineWidth;
+
+        // theme
+        QComboBox *chromeCombo;
+
+        // Fonts
+        QFontComboBox *def,
+                      *titles,
+                      *chartmarkers,
+                      *chartlabels,
+                      *calendar;
+
+        QComboBox *defaultSize,
+                  *titlesSize,
+                  *chartmarkersSize,
+                  *chartlabelsSize,
+                  *calendarSize;
+
+        // tabbed view between colors and themes
+        QTabWidget *colorTab;
+
+        // Colors
         QTreeWidget *colors;
+        QTreeWidget *themes;
         const Colors *colorSet;
+        QPushButton *applyTheme;
+
+        struct {
+            bool alias, scroll, head;
+            double line;
+            int chrome;
+            unsigned long fingerprint;
+        } b4;
 };
 
 class FieldsPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
         FieldsPage(QWidget *parent, QList<FieldDefinition>);
         void getDefinitions(QList<FieldDefinition>&);
+        static void addFieldTypes(QComboBox *p);
 
     public slots:
         void addClicked();
@@ -277,17 +506,24 @@ class FieldsPage : public QWidget
 
         QTreeWidget *fields;
 
-        QPushButton *upButton, *downButton, *addButton, *renameButton, *deleteButton;
+#ifndef Q_OS_MAC
+        QToolButton *upButton, *downButton;
+#else
+        QPushButton *upButton, *downButton;
+#endif
+        QPushButton *addButton, *renameButton, *deleteButton;
 };
 
 class ProcessorPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        ProcessorPage(MainWindow *main);
-        void saveClicked();
+        ProcessorPage(Context *context);
+        qint32 saveClicked();
 
     public slots:
 
@@ -296,7 +532,7 @@ class ProcessorPage : public QWidget
 
     protected:
 
-        MainWindow *main;
+        Context *context;
         QMap<QString, DataProcessor*> processors;
 
         QTreeWidget *processorTree;
@@ -304,41 +540,89 @@ class ProcessorPage : public QWidget
 
 };
 
-class MetadataPage : public QWidget
+class DefaultsPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        MetadataPage(MainWindow *);
-        void saveClicked();
+        DefaultsPage(QWidget *parent, QList<DefaultDefinition>);
+        void getDefinitions(QList<DefaultDefinition>&);
+
+    public slots:
+        void addClicked();
+        void upClicked();
+        void downClicked();
+        void deleteClicked();
+
+    protected:
+
+        QTreeWidget *defaults;
+
+#ifndef Q_OS_MAC
+        QToolButton *upButton, *downButton;
+#else
+        QPushButton *upButton, *downButton;
+#endif
+        QPushButton *addButton, *deleteButton;
+
+};
+
+class MetadataPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+    friend class ::KeywordsPage;
+
+    public:
+
+        MetadataPage(Context *);
+        qint32 saveClicked();
 
     public slots:
 
 
     protected:
 
-        MainWindow *main;
+        Context *context;
         bool changed;
 
         QTabWidget *tabs;
         KeywordsPage *keywordsPage;
         FieldsPage *fieldsPage;
         ProcessorPage *processorPage;
+        DefaultsPage *defaultsPage;
 
         // local versions for modification
         QList<KeywordDefinition> keywordDefinitions;
         QList<FieldDefinition>   fieldDefinitions;
+        QList<DefaultDefinition>  defaultDefinitions;
+        QString colorfield;
+
+        // initial values
+        struct {
+            unsigned long fieldFingerprint;
+            unsigned long keywordFingerprint;
+            QString colorfield;
+        } b4;
 };
 
+//
+// Power Zones
+//
 class SchemePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
         SchemePage(ZonePage *parent);
         ZoneScheme getScheme();
-        void saveClicked();
+        qint32 saveClicked();
 
     public slots:
         void addClicked();
@@ -354,6 +638,8 @@ class SchemePage : public QWidget
 class CPPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
         CPPage(ZonePage *parent);
@@ -372,6 +658,7 @@ class CPPage : public QWidget
 
         QDateEdit *dateEdit;
         QDoubleSpinBox *cpEdit;
+        QDoubleSpinBox *wEdit;
 
         ZonePage *zonePage;
         QTreeWidget *ranges;
@@ -383,14 +670,17 @@ class CPPage : public QWidget
 class ZonePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        ZonePage(MainWindow *);
-        void saveClicked();
+        ZonePage(Context *);
+        qint32 saveClicked();
 
         //ZoneScheme scheme;
         Zones zones;
+        quint16 b4Fingerprint; // how did it start ?
 
         // Children talk to each other
         SchemePage *schemePage;
@@ -401,7 +691,7 @@ class ZonePage : public QWidget
 
     protected:
 
-        MainWindow *main;
+        Context *context;
         bool changed;
 
         QTabWidget *tabs;
@@ -409,14 +699,19 @@ class ZonePage : public QWidget
         // local versions for modification
 };
 
+//
+// Heartrate Zones
+//
 class HrSchemePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
     HrSchemePage(HrZonePage *parent);
     HrZoneScheme getScheme();
-    void saveClicked();
+    qint32 saveClicked();
 
     public slots:
     void addClicked();
@@ -433,6 +728,8 @@ private:
 class LTPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
     LTPage(HrZonePage *parent);
@@ -464,14 +761,17 @@ private:
 class HrZonePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
 
-    HrZonePage(MainWindow *);
-    void saveClicked();
+    HrZonePage(Context *);
+    qint32 saveClicked();
 
     //ZoneScheme scheme;
     HrZones zones;
+    quint16 b4Fingerprint; // how did it start ?
 
     // Children talk to each other
     HrSchemePage *schemePage;
@@ -482,7 +782,7 @@ public:
 
 protected:
 
-    MainWindow *main;
+    Context *context;
     bool changed;
 
     QTabWidget *tabs;
@@ -490,64 +790,180 @@ protected:
     // local versions for modification
 };
 
-class RiderPage : public QWidget
+//
+// Pace Zones
+//
+class PaceSchemePage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
 
     public:
-        RiderPage(QWidget *parent, MainWindow *mainWindow);
-        void saveClicked();
+        PaceSchemePage(PaceZonePage *parent);
+        PaceZoneScheme getScheme();
+        qint32 saveClicked();
 
     public slots:
-        void chooseAvatar();
+        void addClicked();
+        void deleteClicked();
+        void renameClicked();
 
     private:
-        MainWindow *mainWindow;
-        bool useMetricUnits;
-        QLineEdit *nickname;
-        QDateEdit *dob;
-        QComboBox *sex;
-        QDoubleSpinBox *weight;
-        QTextEdit  *bio;
-        QPushButton *avatarButton;
-        QPixmap     avatar;
-        QString cyclist;
+        PaceZonePage *zonePage;
+        QTreeWidget *scheme;
+        QPushButton *addButton, *renameButton, *deleteButton;
 };
 
-class TwitterPage : public QWidget
+class CVPage : public QWidget
 {
     Q_OBJECT
+    G_OBJECT
+
+
+    public:
+        CVPage(PaceZonePage *parent);
+        QCheckBox *metric;
+
+    public slots:
+        void addClicked();
+        void deleteClicked();
+        void defaultClicked();
+        void rangeSelectionChanged();
+        void addZoneClicked();
+        void deleteZoneClicked();
+        void zonesChanged();
+
+        void metricChanged();
+
+    private:
+        bool active;
+
+        QDateEdit *dateEdit;
+        QTimeEdit *cvEdit;
+
+        PaceZonePage *zonePage;
+        QTreeWidget *ranges;
+        QTreeWidget *zones;
+        QPushButton *addButton, *deleteButton, *defaultButton;
+        QPushButton *addZoneButton, *deleteZoneButton;
+        QLabel *per;
+};
+
+class PaceZonePage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
 
     public:
 
-        TwitterPage(QWidget *parent = 0);
+        PaceZonePage(Context *);
+        ~PaceZonePage() { delete zones; }
+        qint32 saveClicked();
+
+        PaceZones* zones;
+        quint16 b4Fingerprint; // how did it start ?
 
         // Children talk to each other
-        SchemePage *schemePage;
-        CPPage *cpPage;
-        QLineEdit *twitterPIN;
-        void saveClicked();
+        PaceSchemePage *schemePage;
+        CVPage *cvPage;
+
     public slots:
 
-#ifdef GC_HAVE_LIBOAUTH
-        void authorizeClicked();
-#endif
 
     protected:
 
-        MainWindow *main;
+        Context *context;
         bool changed;
 
         QTabWidget *tabs;
 
-        // local versions for modification
     private:
-        QLabel *twitterPinLabel;
-        QPushButton *authorizeButton;
-        char *t_key;
-        char *t_secret;
-        boost::shared_ptr<QSettings> settings;
+
+        QLabel *sportLabel;
+        QComboBox *sportCombo;
+
+    private slots:
+        void changeSport();
 
 };
+
+// Seasons
+
+class SeasonsPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+        SeasonsPage(QWidget *parent, Context *context);
+        void getDefinitions(QList<Season>&);
+
+    public slots:
+        void addClicked();
+        void upClicked();
+        void downClicked();
+        void renameClicked();
+        void deleteClicked();
+        void clearEdit();
+        qint32 saveClicked();
+
+    private:
+
+        QTreeWidget *seasons;
+        Context *context;
+
+        QLineEdit *nameEdit;
+        QComboBox *typeEdit;
+        QDateEdit *fromEdit, *toEdit;
+#ifndef Q_OS_MAC
+        QToolButton *upButton, *downButton;
+#else
+        QPushButton *upButton, *downButton;
+#endif
+        QPushButton *addButton, *renameButton, *deleteButton;
+
+        QList<Season> array;
+};
+
+class AutoImportPage : public QWidget
+{
+    Q_OBJECT
+    G_OBJECT
+
+
+    public:
+
+        AutoImportPage(Context *);
+        qint32 saveClicked();
+        void addRuleTypes(QComboBox *p);
+
+    public slots:
+
+        void addClicked();
+        void upClicked();
+        void downClicked();
+        void deleteClicked();
+        void browseImportDir();
+
+
+    private:
+
+        Context *context;
+        QList<RideAutoImportRule> rules;
+
+        QTreeWidget *fields;
+
+#ifndef Q_OS_MAC
+        QToolButton *upButton, *downButton;
+#else
+        QPushButton *upButton, *downButton;
+#endif
+        QPushButton *addButton, *renameButton, *deleteButton, *browseButton;
+
+};
+
 
 #endif

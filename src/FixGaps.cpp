@@ -19,15 +19,16 @@
 #include "DataProcessor.h"
 #include "Settings.h"
 #include "Units.h"
+#include "HelpWhatsThis.h"
 #include <algorithm>
 #include <QVector>
-
-#define tr(s) QObject::tr(s)
 
 // Config widget used by the Preferences/Options config panes
 class FixGaps;
 class FixGapsConfig : public DataProcessorConfig
 {
+    Q_DECLARE_TR_FUNCTIONS(FixGapsConfig)
+
     friend class ::FixGaps;
     protected:
         QHBoxLayout *layout;
@@ -37,6 +38,9 @@ class FixGapsConfig : public DataProcessorConfig
 
     public:
         FixGapsConfig(QWidget *parent) : DataProcessorConfig(parent) {
+
+            HelpWhatsThis *help = new HelpWhatsThis(parent);
+            parent->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::MenuBar_Edit_FixGapsInRecording));
 
             layout = new QHBoxLayout(this);
 
@@ -89,17 +93,15 @@ class FixGapsConfig : public DataProcessorConfig
         }
 
         void readConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            double tol = settings->value(GC_DPFG_TOLERANCE, "1.0").toDouble();
-            double stop = settings->value(GC_DPFG_STOP, "1.0").toDouble();
+            double tol = appsettings->value(NULL, GC_DPFG_TOLERANCE, "1.0").toDouble();
+            double stop = appsettings->value(NULL, GC_DPFG_STOP, "1.0").toDouble();
             tolerance->setValue(tol);
             beerandburrito->setValue(stop);
         }
 
         void saveConfig() {
-            boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-            settings->setValue(GC_DPFG_TOLERANCE, tolerance->value());
-            settings->setValue(GC_DPFG_STOP, beerandburrito->value());
+            appsettings->setValue(GC_DPFG_TOLERANCE, tolerance->value());
+            appsettings->setValue(GC_DPFG_STOP, beerandburrito->value());
         }
 };
 
@@ -109,6 +111,7 @@ class FixGapsConfig : public DataProcessorConfig
 //                           to ensure dataPoints are contiguous in time
 //
 class FixGaps : public DataProcessor {
+    Q_DECLARE_TR_FUNCTIONS(FixGaps)
 
     public:
         FixGaps() {}
@@ -121,9 +124,14 @@ class FixGaps : public DataProcessor {
         DataProcessorConfig* processorConfig(QWidget *parent) {
             return new FixGapsConfig(parent);
         }
+
+        // Localized Name
+        QString name() {
+            return (tr("Fix Gaps in Recording"));
+        }
 };
 
-static bool fixGapsAdded = DataProcessorFactory::instance().registerProcessor(QString(tr("Fix Gaps in Recording")), new FixGaps());
+static bool fixGapsAdded = DataProcessorFactory::instance().registerProcessor(QString("Fix Gaps in Recording"), new FixGaps());
 
 bool
 FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
@@ -131,9 +139,8 @@ FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
     // get settings
     double tolerance, stop;
     if (config == NULL) { // being called automatically
-        boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-        tolerance = settings->value(GC_DPFG_TOLERANCE, "1.0").toDouble();
-        stop = settings->value(GC_DPFG_STOP, "1.0").toDouble();
+        tolerance = appsettings->value(NULL, GC_DPFG_TOLERANCE, "1.0").toDouble();
+        stop = appsettings->value(NULL, GC_DPFG_STOP, "1.0").toDouble();
     } else { // being called manually
         tolerance = ((FixGapsConfig*)(config))->tolerance->value();
         stop = ((FixGapsConfig*)(config))->beerandburrito->value();
@@ -142,11 +149,6 @@ FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
     // if the number of duration / number of samples
     // equals the recording interval then we don't need
     // to post-process for gaps
-    // XXX commented out since it is not always true and
-    //     is purely to improve performance
-    //if ((ride->recIntSecs() + ride->dataPoints()[ride->dataPoints().count()-1]->secs -
-    //    ride->dataPoints()[0]->secs) / (double) ride->dataPoints().count() == ride->recIntSecs())
-    //    return false;
 
     // Additionally, If there are less than 2 dataPoints then there
     // is no way of post processing anyway (e.g. manual workouts)
@@ -189,6 +191,29 @@ FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
                 double londelta = (point->lon - last->lon) / (double) count;
                 double latdelta = (point->lat - last->lat) / (double) count;
                 double hwdelta = (point->headwind - last->headwind) / (double) count;
+                double slopedelta = (point->slope - last->slope) / (double) count;
+                double temperaturedelta = (point->temp - last->temp) / (double) count;
+                double lrbalancedelta = (point->lrbalance - last->lrbalance) / (double) count;
+                double ltedelta = (point->lte - last->lte) / (double) count;
+                double rtedelta = (point->rte - last->rte) / (double) count;
+                double lpsdelta = (point->lps - last->lps) / (double) count;
+                double rpsdelta = (point->rps - last->rps) / (double) count;
+                double lpcodelta = (point->lpco - last->lpco) / (double) count;
+                double rpcodelta = (point->rpco - last->rpco) / (double) count;
+                double lppbdelta = (point->lppb - last->lppb) / (double) count;
+                double rppbdelta = (point->rppb - last->rppb) / (double) count;
+                double lppedelta = (point->lppe - last->lppe) / (double) count;
+                double rppedelta = (point->rppe - last->rppe) / (double) count;
+                double lpppbdelta = (point->lpppb - last->lpppb) / (double) count;
+                double rpppbdelta = (point->rpppb - last->rpppb) / (double) count;
+                double lpppedelta = (point->lpppe - last->lpppe) / (double) count;
+                double rpppedelta = (point->rpppe - last->rpppe) / (double) count;
+                double smo2delta = (point->smo2 - last->smo2) / (double) count;
+                double thbdelta = (point->thb - last->thb) / (double) count;
+                double rcontactdelta = (point->rcontact - last->rcontact) / (double) count;
+                double rcaddelta = (point->rcad - last->rcad) / (double) count;
+                double rvertdelta = (point->rvert - last->rvert) / (double) count;
+
 
                 // add the points
                 for(int i=0; i<count; i++) {
@@ -203,7 +228,30 @@ FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
                                                            last->lon + ((i+1)*londelta),
                                                            last->lat + ((i+1)*latdelta),
                                                            last->headwind + ((i+1)*hwdelta),
+                                                           last->slope + ((i+1)*slopedelta),
+                                                           last->temp + ((i+1)*temperaturedelta),
+                                                           last->lrbalance + ((i+1)*lrbalancedelta),
+                                                           last->lte + ((i+1)*ltedelta),
+                                                           last->rte + ((i+1)*rtedelta),
+                                                           last->lps + ((i+1)*lpsdelta),
+                                                           last->rps + ((i+1)*rpsdelta),
+                                                           last->lpco + ((i+1)*lpcodelta),
+                                                           last->rpco + ((i+1)*rpcodelta),
+                                                           last->lppb + ((i+1)*lppbdelta),
+                                                           last->rppb + ((i+1)*rppbdelta),
+                                                           last->lppe + ((i+1)*lppedelta),
+                                                           last->rppe + ((i+1)*rppedelta),
+                                                           last->lpppb + ((i+1)*lpppbdelta),
+                                                           last->rpppb + ((i+1)*rpppbdelta),
+                                                           last->lpppe + ((i+1)*lpppedelta),
+                                                           last->rpppe + ((i+1)*rpppedelta),
+                                                           last->smo2 + ((i+1)*smo2delta),
+                                                           last->thb + ((i+1)*thbdelta),
+                                                           last->rvert + ((i+1)*rvertdelta),
+                                                           last->rcad + ((i+1)*rcaddelta),
+                                                           last->rcontact + ((i+1)*rcontactdelta),
                                                            last->interval);
+
                     ride->command->insertPoint(position++, add);
                 }
 
@@ -229,6 +277,15 @@ FixGaps::postProcess(RideFile *ride, DataProcessorConfig *config=0)
                                                            0,
                                                            0,
                                                            0,
+                                                           0,
+                                                           0,
+                                                           0,
+                                                           0.0, 0.0, 0.0, 0.0, //pedal torque / smoothness
+                                                           0.0, 0.0, // pedal platform offset
+                                                           0.0, 0.0, 0.0, 0.0, //pedal power phase
+                                                           0.0, 0.0, 0.0, 0.0, //pedal peak power phase
+                                                           0.0, 0.0, // smO2 / thb
+                                                           0.0, 0.0, 0.0, // running dynamics
                                                            last->interval);
                     ride->command->insertPoint(position++, add);
                 }

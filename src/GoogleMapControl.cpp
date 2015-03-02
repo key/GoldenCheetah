@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2009 Greg Lonnon (greg.lonnon@gmail.com)
+ *               2011 Mark Liversedge (liversedge@gmail.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -17,527 +18,885 @@
  */
 
 #include "GoogleMapControl.h"
+
+#include "MainWindow.h"
 #include "RideItem.h"
 #include "RideFile.h"
-#include "MainWindow.h"
+#include "IntervalItem.h"
+#include "IntervalTreeView.h"
+#include "Context.h"
+#include "Athlete.h"
 #include "Zones.h"
 #include "Settings.h"
+#include "Colors.h"
 #include "Units.h"
+#include "TimeUtils.h"
+#include "HelpWhatsThis.h"
 
+// overlay helper
+#include "TabView.h"
+#include "GcOverlayWidget.h"
+#include "IntervalSummaryWindow.h"
 #include <QDebug>
 
-#include <iostream>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <algorithm>
-#include <boost/foreach.hpp>
-#include <boost/circular_buffer.hpp>
-
-using namespace std;
-
-namespace gm
+GoogleMapControl::GoogleMapControl(Context *context) : GcChartWindow(context), context(context), 
+                                                       range(-1), current(NULL), firstShow(true), stale(false)
 {
-// quick ideas on a math pipeline, kindof like this...
-// but more of a pipeline...
-// it makes the math somewhat easier to do and understand...
+    setControls(NULL);
 
-    class RideFilePointAlgorithm
-    {
-    protected:
-        RideFilePoint prevRfp;
-        bool first;
-        RideFilePointAlgorithm() { first = false; }
-    };
+    setContentsMargins(0,0,0,0);
+    layout = new QVBoxLayout();
+    layout->setSpacing(0);
+    layout->setContentsMargins(2,0,2,2);
+    setChartLayout(layout);
 
-    // Algorithm to find the meidan of a set of data
-    template<typename T> class Median
-    {
-        boost::circular_buffer<T> buffer;
-    public:
-        Median(int size)
-        {
-            buffer.set_capacity(size);
-        }
-        // add the new data
-        void add(T a) { buffer.push_back(a); }
-        operator T()
-        {
-            if(buffer.size() == 0)
-            {
-                return 0;
-            }
+    view = new QWebView();
+    view->setPage(new myWebPage());
+    view->setContentsMargins(0,0,0,0);
+    view->page()->view()->setContentsMargins(0,0,0,0);
+    view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    view->setAcceptDrops(false);
+    layout->addWidget(view);
 
-            T total = 0;
-            BOOST_FOREACH(T point, buffer)
-            {
-                total += point;
-            }
-            return total / buffer.size();
-        }
-    };
+    HelpWhatsThis *help = new HelpWhatsThis(view);
+    view->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::ChartRides_Map));
 
-    class AltGained : private RideFilePointAlgorithm
-    {
-    protected:
-        double gained;
-        double curAlt, prevAlt;
-        Median<double> median;
-    public:
-        AltGained(): gained(0), curAlt(0), prevAlt(0), median(20) {}
+    webBridge = new WebBridge(context, this);
 
-        void operator()(RideFilePoint rfp)
-        {
-            median.add(rfp.alt);
-            curAlt = median;
-            if(prevAlt == 0)
-            {
-                prevAlt = median;
-            }
-            if(curAlt> prevAlt)
-            {
-                gained += curAlt - prevAlt;
-            }
-            prevAlt = curAlt;
-        }
-        int TotalGained() { return gained; }
-        operator int() { return TotalGained(); }
-    };
+    // put a helper on the screen for mouse over intervals...
+    overlayIntervals = new IntervalSummaryWindow(context);
+    addHelper(tr("Intervals"), overlayIntervals);
 
-    class AvgHR
-    {
-        int samples;
-        int totalHR;
-    public:
-        AvgHR() : samples(0),totalHR(0.0) {}
-        void operator()(RideFilePoint rfp)
-        {
-            totalHR += rfp.hr;
-            samples++;
-        }
-        int HR() { return totalHR / samples; }
-        operator int() { return HR(); }
-    };
+    //
+    // connects
+    //
+    connect(this, SIGNAL(rideItemChanged(RideItem*)), this, SLOT(rideSelected()));
+    connect(view->page()->mainFrame(), SIGNAL(javaScriptWindowObjectCleared()), this, SLOT(updateFrame()));
+    connect(context, SIGNAL(rideChanged(RideItem*)), this, SLOT(forceReplot()));
+    connect(context, SIGNAL(intervalsChanged()), webBridge, SLOT(intervalsChanged()));
+    connect(context, SIGNAL(intervalSelected()), webBridge, SLOT(intervalsChanged()));
+    connect(context, SIGNAL(intervalZoom(IntervalItem*)), this, SLOT(zoomInterval(IntervalItem*)));
+    connect(context, SIGNAL(configChanged(qint32)), this, SLOT(configChanged(qint32)));
 
-    class AvgPower
-    {
-        int samples;
-        double totalPower;
-    public:
-        AvgPower() : samples(0), totalPower(0.0) { }
-        void operator()(RideFilePoint rfp)
-        {
-            totalPower += rfp.watts;
-            samples++;
-        }
-        int Power() { return (int) (totalPower / samples); }
-        operator int() { return Power(); }
-    };
+    first = true;
+    configChanged(CONFIG_APPEARANCE);
 }
 
-using namespace gm;
-
-#define GOOGLE_KEY "ABQIAAAAS9Z2oFR8vUfLGYSzz40VwRQ69UCJw2HkJgivzGoninIyL8-QPBTtnR-6pM84ljHLEk3PDql0e2nJmg"
-
-GoogleMapControl::GoogleMapControl(MainWindow *mw) : main(mw), range(-1), current(NULL)
+GoogleMapControl::~GoogleMapControl()
 {
-    parent = mw;
-    view = new QWebView();
-    layout = new QVBoxLayout();
-    layout->addWidget(view);
-    setLayout(layout);
-    connect(parent, SIGNAL(rideSelected()), this, SLOT(rideSelected()));
-    connect(view, SIGNAL(loadStarted()), this, SLOT(loadStarted()));
-    connect(view, SIGNAL(loadFinished(bool)), this, SLOT(loadFinished(bool)));
-    loadingPage = false;
-    newRideToLoad = false;
+    delete webBridge;
+}
+
+void 
+GoogleMapControl::configChanged(qint32)
+{
+    setProperty("color", GColor(CPLOTBACKGROUND));
+#ifndef Q_OS_MAC
+    overlayIntervals->setStyleSheet(TabView::ourStyleSheet());
+#endif
+}
+
+void
+GoogleMapControl::forceReplot()
+{
+    stale=true;
+    rideSelected();
 }
 
 void
 GoogleMapControl::rideSelected()
 {
-  if (parent->activeTab() != this) return;
+    RideItem * ride = myRideItem;
 
-  RideItem * ride = parent->rideItem();
-  if (ride == current || !ride || !ride->ride())
-      return;
-  else
-      current = ride;
+    // set/unset blank then decide what to do next
+    if (!ride || !ride->ride() || !ride->ride()->dataPoints().count()) setIsBlank(true);
+    else setIsBlank(false);
 
-  range =ride->zoneRange();
-  if(range < 0)
-  {
-      rideCP = 300;  // default cp to 300 watts
-  }
-  else
-  {
-      rideCP = ride->zones->getCP(range);
-  }
+    // skip display if data already drawn or invalid
+    if (myRideItem == NULL || !amVisible()) return;
 
-  rideData.clear();
-  double prevLon = 1000;
-  double prevLat = 1000;
+    // nothing to plot
+    if (!ride || !ride->ride()) return;
+    else if (!stale && ride == current) return;
+    
+    // remember what we last plotted
+    current = ride;
 
-  foreach(RideFilePoint *rfp,ride->ride()->dataPoints())
-  {
-      RideFilePoint curRfp = *rfp;
+    // Route metadata ...
+    setSubTitle(ride->ride()->getTag("Route", tr("Route")));
 
-      // wko imports can have -320 type of values for roughly 40 degrees
-      // This if range is a guess that we only have these -ve type numbers for actual 0 to 90 deg of Latitude
-      if(curRfp.lat <= -270 && curRfp.lat >= -360)
-      {
-          curRfp.lat = 360 + curRfp.lat;
-      }
-      // Longitude = -180 to 180 degrees, Latitude = -90 to 90 degrees - anything else is invalid.
-      if((curRfp.lon < -180 || curRfp.lon > 180 || curRfp.lat < -90 || curRfp.lat > 90)
-      // Garmin FIT records a missed GPS signal as 0/0.
-      || ((curRfp.lon == 0) && (curRfp.lat == 0)))
-      {
-          curRfp.lon = 999;
-          curRfp.lat = 999;
-      }
-      prevLon = curRfp.lon;
-      prevLat = curRfp.lat;
-      rideData.push_back(curRfp);
-  }
-  newRideToLoad = true;
-  loadRide();
-}
+    // default to ..
+    range = -1;
+    rideCP = 300;
+    stale = false;
 
-void GoogleMapControl::resizeEvent(QResizeEvent * )
-{
-    static bool first = true;
-    if (parent->activeTab() != this) return;
-
-    if (first == true) {
-        first = false;
-    } else {
-        newRideToLoad = true;
-        loadRide();
+    if (context->athlete->zones()) {
+        range = context->athlete->zones()->whichRange(ride->dateTime.date());
+        if (range >= 0) rideCP = context->athlete->zones()->getCP(range);
     }
-}
 
-void GoogleMapControl::loadStarted()
-{
-    loadingPage = true;
-}
-
-/// called after the load is finished
-void GoogleMapControl::loadFinished(bool)
-{
-    loadingPage = false;
     loadRide();
 }
 
 void GoogleMapControl::loadRide()
 {
-    if(loadingPage == true)
-    {
-        return;
-    }
+    createHtml();
+    view->page()->mainFrame()->setHtml(currentPage);
+}
 
-    if(newRideToLoad == true)
-    {
-        createHtml();
-        newRideToLoad = false;
-        loadingPage = true;
+void GoogleMapControl::updateFrame()
+{
+    // deleting the web bridge seems to be the only way to
+    // reset state between it and the webpage.
+    delete webBridge;
+    webBridge = new WebBridge(context, this);
+    connect(context, SIGNAL(intervalsChanged()), webBridge, SLOT(intervalsChanged()));
+    connect(context, SIGNAL(intervalSelected()), webBridge, SLOT(intervalsChanged()));
 
-        QString htmlFile(QDir::tempPath());
-        htmlFile.append("/maps.html");
-        QFile file(htmlFile);
-        file.remove();
-        file.open(QIODevice::ReadWrite);
-        file.write(currentPage.str().c_str(),currentPage.str().length());
-        file.flush();
-        file.close();
-        QString filename("file:///");
-        filename.append(htmlFile);
-        QUrl url(filename);
-        view->load(url);
-    }
+    view->page()->mainFrame()->addToJavaScriptWindowObject("webBridge", webBridge);
 }
 
 void GoogleMapControl::createHtml()
 {
-    currentPage.str("");
+    RideItem * ride = myRideItem;
+    currentPage = "";
     double minLat, minLon, maxLat, maxLon;
     minLat = minLon = 1000;
     maxLat = maxLon = -1000; // larger than 360
 
-    BOOST_FOREACH(RideFilePoint rfp, rideData)
-    {
-        if (rfp.lat != 999 && rfp.lon != 999)
-        {
-            minLat = std::min(minLat,rfp.lat);
-            maxLat = std::max(maxLat,rfp.lat);
-            minLon = std::min(minLon,rfp.lon);
-            maxLon = std::max(maxLon,rfp.lon);
+    // get bounding co-ordinates for ride
+    foreach(RideFilePoint *rfp, myRideItem->ride()->dataPoints()) {
+        if (rfp->lat || rfp->lon) {
+            minLat = std::min(minLat,rfp->lat);
+            maxLat = std::max(maxLat,rfp->lat);
+            minLon = std::min(minLon,rfp->lon);
+            maxLon = std::max(maxLon,rfp->lon);
         }
     }
-    if(minLon == 1000)
-    {
-        currentPage << tr("No GPS Data Present").toStdString();
+
+    // No GPS data, so sorry no map
+    QColor bgColor = GColor(CPLOTBACKGROUND);
+    QColor fgColor = GCColor::invertColor(bgColor);
+    if(!ride || !ride->ride() || ride->ride()->areDataPresent()->lat == false || ride->ride()->areDataPresent()->lon == false) {
+        currentPage = QString("<STYLE>BODY { background-color: %1; color: %2 }</STYLE><center>%3</center>").arg(bgColor.name()).arg(fgColor.name()).arg(tr("No GPS Data Present"));
+        setIsBlank(true);
         return;
+    } else {
+        setIsBlank(false);
     }
 
-    /// seems to be the magic number... to stop the scrollbars
-    int width = view->width() -16;
-    int height = view->height() -16;
+    // load the Google Map v3 API
+    currentPage = QString("<!DOCTYPE html> \n"
+    "<html>\n"
+    "<head>\n"
+    "<meta name=\"viewport\" content=\"initial-scale=1.0, user-scalable=yes\"/> \n"
+    "<meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\"/>\n"
+    "<title>Golden Cheetah Map</title>\n"
+    "<!--<link href=\"http://code.google.com/apis/maps/documentation/javascript/examples/default.css\" rel=\"stylesheet\" type=\"text/css\" />--> \n"
+    "<style type=\"text/css\">\n"
+    "   html { height: 100% }\n"
+    "   body { height: 100%; margin: 0; padding: 0 }\n"
+    "   #map-canvas { height: 100% }\n"
+    "</style>\n"
+    "<script type=\"text/javascript\" src=\"http://maps.googleapis.com/maps/api/js?key=AIzaSyASrk4JoJOzESQguDwjk8aq9nQXsrUUskM&sensor=false\"></script> \n");
 
-    std::ostringstream oss;
-    oss.precision(6);
-    oss.setf(ios::fixed,ios::floatfield);
+    // fg/bg
+    currentPage += QString("<STYLE>BODY { background-color: %1; color: %2 }</STYLE>")
+                                          .arg(bgColor.name()).arg(fgColor.name());
 
-    oss << "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\"" << endl
-        << "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">" << endl
-        << "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:v=\"urn:schemas-microsoft-com:vml\">" << endl
-        << "<head>" << endl
-        << "<meta http-equiv=\"content-type\" content=\"text/html; charset=utf-8\"/>" << endl
-        << "<title>GoldenCheetah</title>" << endl
-        << "<script src=\"http://maps.google.com/maps?file=api&amp;v=2&amp;key=" << GOOGLE_KEY <<"\"" << endl
-        << "type=\"text/javascript\"></script>" << endl
-        << CreateMapToolTipJavaScript() << endl
-        << "<script type=\"text/javascript\">"<< endl
-        << "var map;" << endl
-        << "function initialize() {" << endl
-        << "if (GBrowserIsCompatible()) {" << endl
-        << "map = new GMap2(document.getElementById(\"map_canvas\")," << endl
-        << " {size: new GSize(" << width << "," << height << ") } );" << endl
-        << "map.setUIToDefault()" << endl
-        << CreatePolyLine() << endl
-        << CreateIntervalMarkers() << endl
-        << "var sw = new GLatLng(" << minLat << "," << minLon << ");" << endl
-        << "var ne = new GLatLng(" << maxLat << "," << maxLon << ");" << endl
-        << "var bounds = new GLatLngBounds(sw,ne);" << endl
-        << "var zoomLevel = map.getBoundsZoomLevel(bounds);" << endl
-        << "var center = bounds.getCenter(); " << endl
-        << "map.setCenter(bounds.getCenter(),map.getBoundsZoomLevel(bounds),G_PHYSICAL_MAP);" << endl
-        << "map.enableScrollWheelZoom();" << endl
-        << "}" << endl
-        << "}" << endl
-        << "function animate() {"  << endl
-        << "map.panTo(new GLatLng(" << maxLat << "," << minLon << "));" << endl
-        << "}" << endl
-        << "</script>" << endl
-        << "</head>" << endl
-        << "<body onload=\"initialize()\" onunload=\"GUnload()\">" << endl
-        << "<div id=\"map_canvas\" style=\"width: " << width <<"px; height: "
-        << height <<"px\"></div>" << endl
-        << "<form action=\"#\" onsubmit=\"animate(); return false\">" << endl
-        << "</form>" << endl
-        << "</body>" << endl
-        << "</html>" << endl;
+    // local functions
+    currentPage += QString("<script type=\"text/javascript\">\n"
+    "var map;\n"  // the map object
+    "var intervalList;\n"  // array of intervals
+    "var markerList;\n"  // array of markers
+    "var polyList;\n"  // array of polylines
+    "var tmpIntervalHighlighter;\n"  // temp interval
 
-    currentPage << oss.str();
+    // Draw the entire route, we use a local webbridge
+    // to supply the data to a) reduce bandwidth and
+    // b) allow local manipulation. This makes the UI
+    // considerably more 'snappy'
+    "function drawRoute() {\n"
+
+    // route will be drawn with these options
+    "    var routeOptionsYellow = {\n"
+    "        strokeColor: '#FFFF00',\n"
+    "        strokeOpacity: 0.4,\n"
+    "        strokeWeight: 10,\n"
+    "        zIndex: -2\n"
+    "    };\n"
+
+    // load the GPS co-ordinates
+    "    var latlons = webBridge.getLatLons(0);\n" // interval "0" is the entire route
+
+    // create the route Polyline
+    "    var routeYellow = new google.maps.Polyline(routeOptionsYellow);\n"
+    "    routeYellow.setMap(map);\n"
+
+    // lastly, populate the route path
+    "    var path = routeYellow.getPath();\n"
+    "    var j=0;\n"
+    "    while (j < latlons.length) { \n"
+    "        path.push(new google.maps.LatLng(latlons[j], latlons[j+1]));\n"
+    "        j += 2;\n"
+    "    }\n"
+
+    // Listen mouse events
+    "    google.maps.event.addListener(routeYellow, 'mousedown', function(event) { map.setOptions({draggable: false, zoomControl: false, scrollwheel: false, disableDoubleClickZoom: true}); webBridge.clickPath(event.latLng.lat(), event.latLng.lng()); });\n"
+    "    google.maps.event.addListener(routeYellow, 'mouseup',   function(event) { map.setOptions({draggable: true, zoomControl: true, scrollwheel: true, disableDoubleClickZoom: false}); webBridge.mouseup(); });\n"
+    "    google.maps.event.addListener(routeYellow, 'mouseover', function(event) { webBridge.hoverPath(event.latLng.lat(), event.latLng.lng()); });\n"
+    "}\n"
+
+
+
+    "function drawIntervals() { \n"
+    // intervals will be drawn with these options
+    "    var polyOptions = {\n"
+    "        strokeColor: '#0000FF',\n"
+    "        strokeOpacity: 0.6,\n"
+    "        strokeWeight: 10,\n"
+    "        zIndex: -1\n"  // put at the bottom
+    "    }\n"
+
+    // remove previous intervals highlighted
+    "    j= intervalList.length;\n"
+    "    while (j) {\n"
+    "       var highlighted = intervalList.pop();\n"
+    "       highlighted.setMap(null);\n"
+    "       j--;\n"
+    "    }\n"
+
+    // how many to draw?
+    "    var intervals = webBridge.intervalCount();\n"
+    "    while (intervals > 0) {\n"
+    "        var latlons = webBridge.getLatLons(intervals);\n"
+    "        var intervalHighlighter = new google.maps.Polyline(polyOptions);\n"
+    "        intervalHighlighter.setMap(map);\n"
+    "        intervalList.push(intervalHighlighter);\n"
+    "        var path = intervalHighlighter.getPath();\n"
+    "        var j=0;\n"
+    "        while (j<latlons.length) {\n"
+    "          path.push(new google.maps.LatLng(latlons[j], latlons[j+1]));\n"
+    "          j += 2;\n"
+    "        }\n"
+    "        intervals--;\n"
+    "    }\n"
+    "}\n"
+
+    // initialise function called when map loaded
+    "function initialize() {\n"
+
+    // TERRAIN style map please and make it draggable
+    // note that because QT webkit offers touch/gesture
+    // support the Google API only supports dragging
+    // via gestures - this is alrady registered as a bug
+    // with the google map team
+    "    var controlOptions = {\n"
+    "      style: google.maps.MapTypeControlStyle.DEFAULT\n"
+    "    };\n"
+    "    var myOptions = {\n"
+    "      draggable: true,\n"
+    "      mapTypeId: google.maps.MapTypeId.TERRAIN,\n"
+    "      tilt: 45,\n"
+    "      streetViewControl: false,\n"
+    "    };\n"
+
+    // setup the map, and fit to contain the limits of the route
+    "    map = new google.maps.Map(document.getElementById('map-canvas'), myOptions);\n"
+    "    var sw = new google.maps.LatLng(%1,%2);\n"  // .ARG 1, 2
+    "    var ne = new google.maps.LatLng(%3,%4);\n"  // .ARG 3, 4
+    "    var bounds = new google.maps.LatLngBounds(sw,ne);\n"
+    "    map.fitBounds(bounds);\n"
+
+    // add the bike layer, useful in some areas, but coverage
+    // is limited, US gets best coverage at this point (Summer 2011)
+    "    var bikeLayer = new google.maps.BicyclingLayer();\n"
+    "    bikeLayer.setMap(map);\n"
+
+    // initialise local variables
+    "    markerList = new Array();\n"
+    "    intervalList = new Array();\n"
+    "    polyList = new Array();\n"
+
+    // draw the main route data, getting the geo
+    // data from the webbridge - reduces data sent/received
+    // to the map server and makes the UI pretty snappy
+    "    drawRoute();\n"
+    "    drawIntervals();\n"
+
+    // catch signals to redraw intervals
+    "    webBridge.drawIntervals.connect(drawIntervals);\n"
+
+    // we're done now let the C++ side draw its overlays
+    "    webBridge.drawOverlays();\n"
+
+    // Liste mouse events
+    "    google.maps.event.addListener(map, 'mouseup', function(event) { map.setOptions({draggable: true, zoomControl: true, scrollwheel: true, disableDoubleClickZoom: false}); webBridge.mouseup(); });\n"
+
+
+    "}\n"
+    "</script>\n").arg(minLat,0,'g',GPS_COORD_TO_STRING).
+            arg(minLon,0,'g',GPS_COORD_TO_STRING).
+            arg(maxLat,0,'g',GPS_COORD_TO_STRING).
+            arg(maxLon,0,'g',GPS_COORD_TO_STRING);
+
+    // the main page is rather trivial
+    currentPage += QString("</head>\n"
+    "<body onload=\"initialize()\">\n"
+    "<div id=\"map-canvas\"></div>\n"
+    "</body>\n"
+    "</html>\n");
 }
 
 
 QColor GoogleMapControl::GetColor(int watts)
 {
     if (range < 0) return Qt::red;
-    else return zoneColor(main->zones()->whichZone(range, watts), 7);
+    else return zoneColor(context->athlete->zones()->whichZone(range, watts), 7);
 }
 
-
-/// create the ride line
-string GoogleMapControl::CreatePolyLine()
+// create the ride line
+void
+GoogleMapControl::drawShadedRoute()
 {
-    std::vector<RideFilePoint> intervalPoints;
-    ostringstream oss;
-    int intervalTime = 30;  // 30 seconds
+    int intervalTime = 60;  // 60 seconds
+    double rtime=0; // running total for accumulated data
+    int count=0;  // how many samples ?
+    int rwatts=0; // running total of watts
+    double prevtime=0; // time for previous point
 
-    BOOST_FOREACH(RideFilePoint rfp, rideData)
-    {
-        intervalPoints.push_back(rfp);
-        if((intervalPoints.back().secs - intervalPoints.front().secs) >
-           intervalTime)
-        {
-            // find the avg power and color code it and create a polyline...
-            AvgPower avgPower = for_each(intervalPoints.begin(),
-                                         intervalPoints.end(),
-                                         AvgPower());
-            // find the color
+    QString code;
 
-            // create the polyline
-            CreateSubPolyLine(intervalPoints,oss,avgPower);
-            intervalPoints.clear();
-            intervalPoints.push_back(rfp);
+    foreach(RideFilePoint *rfp, myRideItem->ride()->dataPoints()) {
 
+        if (count == 0) {
+            code = QString("{\nvar polyline = new google.maps.Polyline();\n"
+                   "   polyline.setMap(map);\n"
+                   "   path = polyline.getPath();\n");
+
+            // Listen mouse events
+            code += QString("google.maps.event.addListener(polyline, 'mousedown', function(event) { map.setOptions({draggable: false, zoomControl: false, scrollwheel: false, disableDoubleClickZoom: true}); webBridge.clickPath(event.latLng.lat(), event.latLng.lng()); });\n"
+                            "google.maps.event.addListener(polyline, 'mouseup',   function(event) { map.setOptions({draggable: true, zoomControl: true, scrollwheel: true, disableDoubleClickZoom: false}); webBridge.mouseup(); });\n"
+                            "google.maps.event.addListener(polyline, 'mouseover', function(event) { webBridge.hoverPath(event.latLng.lat(), event.latLng.lng()); });\n");
+        } else {
+            if (rfp->lat || rfp->lon)
+                code += QString("path.push(new google.maps.LatLng(%1,%2));\n").arg(rfp->lat,0,'g',GPS_COORD_TO_STRING).arg(rfp->lon,0,'g',GPS_COORD_TO_STRING);
         }
 
-    }
-    return oss.str();
-}
+        // running total of time
+        rtime += rfp->secs - prevtime;
+        rwatts += rfp->watts;
+        prevtime = rfp->secs;
+        count++;
 
+        // end of segment
+        if (rtime >= intervalTime) {
 
-void GoogleMapControl::CreateSubPolyLine(const std::vector<RideFilePoint> &points,
-                                         std::ostringstream &oss,
-                                         int avgPower)
-{
-    oss.precision(6);
-    QColor color = GetColor(avgPower);
-    QString colorstr = color.name();
-    oss.setf(ios::fixed,ios::floatfield);
-    oss << "var polyline = new GPolyline([";
+            int avgWatts = rwatts / count;
+            QColor color = GetColor(avgWatts);
+            // thats this segment done, so finish off and
+            // add tooltip junk
+            count = rwatts = rtime = 0;
 
-    BOOST_FOREACH(RideFilePoint rfp, points)
-    {
-        if (!(rfp.lat == 999 && rfp.lon == 999))
-        {
-            oss << "new GLatLng(" << rfp.lat << "," << rfp.lon << ")," << endl;
+            // color the polyline
+            code += QString("var polyOptions = {\n"
+                            "    strokeColor: '%1',\n"
+                            "    strokeWeight: 3,\n"
+                            "    strokeOpacity: 0.5,\n" // for out and backs, we need both
+                            "    zIndex: 0,\n"
+                            "}\n"
+                            "polyline.setOptions(polyOptions);\n"
+                            "}\n").arg(color.name());
+
+            view->page()->mainFrame()->evaluateJavaScript(code);
         }
     }
-    oss << "],\"" << colorstr.toStdString() << "\",4);" << endl;
 
-    oss << "GEvent.addListener(polyline, 'mouseover', function() {" << endl
-        << "var tooltip_text = '30s Power: " << avgPower << "';" << endl
-        << "var ss={'weight':8};" << endl
-        << "this.setStrokeStyle(ss);" << endl
-        << "this.overlay = new MapTooltip(this,tooltip_text);" << endl
-        << "map.addOverlay(this.overlay);" << endl
-        << "});" << endl
-        << "GEvent.addListener(polyline, 'mouseout', function() {" << endl
-        << "map.removeOverlay(this.overlay);" << endl
-        << "var ss={'weight':5};" << endl
-        << "this.setStrokeStyle(ss);" << endl
-        << "});" << endl;
-    oss << "map.addOverlay (polyline);" << endl;
 }
 
+void
+GoogleMapControl::clearTempInterval() {
+    QString code = QString( "{ \n"
+                            "    tmpIntervalHighlighter.getPath().clear();\n"
+                            "}\n" );
 
-string GoogleMapControl::CreateIntervalMarkers()
-{
-    bool useMetricUnits = (GetApplicationSettings()->value(GC_UNIT).toString()
-                           == "Metric");
+    view->page()->mainFrame()->evaluateJavaScript(code);
+}
 
-    ostringstream oss;
-    oss.precision(6);
-    oss.setf(ios::fixed,ios::floatfield);
+void
+GoogleMapControl::drawTempInterval(IntervalItem *current) {
 
-    oss << "var marker;" << endl;
-    int currentInterval = 0;
-    std::vector<RideFilePoint> intervalPoints;
-    BOOST_FOREACH(RideFilePoint rfp, rideData)
-    {
-        intervalPoints.push_back(rfp);
-        if(currentInterval < rfp.interval)
-        {
-            // want to see avg power, avg speed, alt changes, avg hr
-            double distance = intervalPoints.back().km -
-                               intervalPoints.front().km ;
-            distance = (useMetricUnits ? distance : distance * MILES_PER_KM);
+    QString code = QString( "{ \n"
+                    // interval will be drawn with these options
+                    "    var polyOptions = {\n"
+                    "        strokeColor: '#00FFFF',\n"
+                    "        strokeOpacity: 0.6,\n"
+                    "        strokeWeight: 10,\n"
+                    "        zIndex: -1\n"  // put at the bottom
+                    "    }\n"
 
-            int secs = intervalPoints.back().secs -
-                intervalPoints.front().secs;
+                    "    if (!tmpIntervalHighlighter) {\n"
+                    "       tmpIntervalHighlighter = new google.maps.Polyline(polyOptions);\n"
+                    "       tmpIntervalHighlighter.setMap(map);\n"
+                    "       google.maps.event.addListener(tmpIntervalHighlighter, 'mouseup',   function(event) { map.setOptions({draggable: true, zoomControl: true, scrollwheel: true, disableDoubleClickZoom: false}); webBridge.mouseup(); });\n"
+                    "    } \n"
 
-            double avgSpeed = (distance/((double)secs)) * 3600;
+                    "    var path = tmpIntervalHighlighter.getPath();\n"
+                    "    path.clear();\n");
 
-            QTime time;
-            time = time.addSecs(secs);
+    foreach(RideFilePoint *rfp, myRideItem->ride()->dataPoints()) {
+        if (rfp->secs+myRideItem->ride()->recIntSecs() > current->start
+            && rfp->secs< current->stop) {
 
-            AvgHR avgHr = for_each(intervalPoints.begin(),
-                                   intervalPoints.end(),
-                                       AvgHR());
-            AvgPower avgPower = for_each(intervalPoints.begin(),
-                                         intervalPoints.end(),
-                                         AvgPower());
-
-            int altGained =ceil(for_each(intervalPoints.begin(),
-                                       intervalPoints.end(),
-                                            AltGained()));
-            altGained = ceil((useMetricUnits ? altGained :
-                              altGained * FEET_PER_METER));
-            oss.precision(6);
-            oss << "marker = new GMarker(new GLatLng( ";
-            oss<< rfp.lat << "," << rfp.lon << "));" << endl;
-            oss << "marker.bindInfoWindowHtml(" <<endl;
-            oss << "\"<p><h3>Lap: " << currentInterval << "</h3></p>" ;
-            oss.precision(1);
-            oss << "<p>Distance: " << distance << " "
-                << (useMetricUnits ? "KM" : "Miles") << "</p>" ;
-            oss << "<p>Time: " << time.toString().toStdString() << "</p>";
-            oss << "<p>Avg Speed</>: " << avgSpeed << " "
-                << (useMetricUnits ? tr("KPH") : tr("MPH")).toStdString()
-                << "</p>";
-            if(avgHr != 0) {
-                oss << "<p>Avg HR: " << avgHr << "</p>";
+            if (rfp->lat || rfp->lon) {
+                code += QString("    path.push(new google.maps.LatLng(%1,%2));\n").arg(rfp->lat,0,'g',GPS_COORD_TO_STRING).arg(rfp->lon,0,'g',GPS_COORD_TO_STRING);
             }
-            if(avgPower != 0)
-            {
-                oss << "<p>Avg Power: " << avgPower << " Watts</p>";
-            }
-            oss << "<p>Alt Gained: " << altGained << " "
-                << (useMetricUnits ? tr("Meters") : tr("Feet")).toStdString()
-                << "</p>";
-            oss << "\");" << endl;
-            oss << "map.addOverlay(marker);" << endl;
-            currentInterval = rfp.interval;
-            intervalPoints.clear();
         }
     }
-    return oss.str();
+
+
+
+    code += QString("}\n" );
+
+    view->page()->mainFrame()->evaluateJavaScript(code);
+
+    overlayIntervals->intervalSelected();
 }
 
-string GoogleMapControl::CreateMapToolTipJavaScript()
+
+
+//
+// Static helper - havervine formula for calculating the distance
+//                 between 2 geo co-ordinates
+//
+static const double DEG_TO_RAD = 0.017453292519943295769236907684886;
+static const double EARTH_RADIUS_IN_METERS = 6372797.560856;
+static double ArcInRadians(double fromLat, double fromLon, double toLat, double toLon) {
+
+    double latitudeArc  = (fromLat - toLat) * DEG_TO_RAD;
+    double longitudeArc = (fromLon - toLon) * DEG_TO_RAD;
+    double latitudeH = sin(latitudeArc * 0.5);
+    latitudeH *= latitudeH;
+    double lontitudeH = sin(longitudeArc * 0.5);
+    lontitudeH *= lontitudeH;
+    double tmp = cos(fromLat*DEG_TO_RAD) * cos(toLat*DEG_TO_RAD);
+    return 2.0 * asin(sqrt(latitudeH + tmp*lontitudeH));
+}
+
+static double distanceBetween(double fromLat, double fromLon, double toLat, double toLon) {
+    return EARTH_RADIUS_IN_METERS*ArcInRadians(fromLat, fromLon, toLat, toLon);
+}
+
+void
+GoogleMapControl::createMarkers()
 {
-    ostringstream oss;
-    oss << "<script type=\"text/javascript\">" << endl
-        << "var MapTooltip = function(obj, html, options) {"<< endl
-        << "this.obj = obj;"<< endl
-        << "this.html = html;"<< endl
-        << "this.options = options || {};"<< endl
-        << "}"<< endl
-        << "MapTooltip.prototype = new GOverlay();"<< endl
-        << "MapTooltip.prototype.initialize = function(map) {"<< endl
-        << "var div = document.getElementById('MapTooltipContainer');"<< endl
-        << "var that = this;"<< endl
-        << "if (!div) {"<< endl
-        << "var div = document.createElement('div');"<< endl
-        << "div.setAttribute('id', 'MapTooltipContainer');"<< endl
-        << "}"<< endl
-        << "if (this.options.maxWidth || this.options.minWidth) {"<< endl
-        << "div.style.maxWidth = this.options.maxWidth || '150px';"<< endl
-        << "div.style.minWidth = this.options.minWidth || '150px';"<< endl
-        << "} else {"<< endl
-        << "div.style.width = this.options.width || '150px';"<< endl
-        << "}"<< endl
-        << "div.style.padding = this.options.padding || '5px';"<< endl
-        << "div.style.backgroundColor = this.options.backgroundColor || '#ffffff';"<< endl
-        << "div.style.border = this.options.border || '1px solid #000000';"<< endl
-        << "div.style.fontSize = this.options.fontSize || '80%';"<< endl
-        << "div.style.color = this.options.color || '#000';"<< endl
-        << "div.innerHTML = this.html;"<< endl
-        << "div.style.position = 'absolute';"<< endl
-        << "div.style.zIndex = '1000';"<< endl
-        << "var offsetX = this.options.offsetX || 10;"<< endl
-        << "var offsetY = this.options.offsetY || 0;"<< endl
-        << "var bounds = map.getBounds();"<< endl
-        << "rightEdge = map.fromLatLngToDivPixel(bounds.getNorthEast()).x;"<< endl
-        << "bottomEdge = map.fromLatLngToDivPixel(bounds.getSouthWest()).y;"<< endl
-        << "var mapev = GEvent.addListener(map, 'mousemove', function(latlng) {"<< endl
-        << "GEvent.removeListener(mapev);"<< endl
-        << "var pixelPosX = (map.fromLatLngToDivPixel(latlng)).x + offsetX;"<< endl
-        << "var pixelPosY = (map.fromLatLngToDivPixel(latlng)).y - offsetY;"<< endl
-        << "div.style.left = pixelPosX + 'px';"<< endl
-        << "div.style.top = pixelPosY + 'px';"<< endl
-        << "map.getPane(G_MAP_FLOAT_PANE).appendChild(div);"<< endl
-        << "if ( (pixelPosX + div.offsetWidth) > rightEdge ) {"<< endl
-        << "div.style.left = (rightEdge - div.offsetWidth - 10) + 'px';"<< endl
-        << "}"<< endl
-        << "if ( (pixelPosY + div.offsetHeight) > bottomEdge ) {"<< endl
-        << "div.style.top = (bottomEdge - div.offsetHeight - 10) + 'px';"<< endl
-        << "}"<< endl
-        << "});"<< endl
-        << "this._map = map;"<< endl
-        << "this._div = div;"<< endl
-        << "}"<< endl
-        << "MapTooltip.prototype.remove = function() {"<< endl
-        << "if(this._div != null) {"<< endl
-        << "this._div.parentNode.removeChild(this._div);"<< endl
-        << "}"<< endl
-        << "}"<< endl
-        << "MapTooltip.prototype.redraw = function(force) {"<< endl
-        << "}"<< endl
-        << "</script> "<< endl;
-    return oss.str();
+    QString code;
+
+    //
+    // START / FINISH MARKER
+    //
+    const QVector<RideFilePoint *> &points = myRideItem->ride()->dataPoints();
+
+    bool loop = distanceBetween(points[0]->lat,
+                                points[0]->lon,
+                                points[points.count()-1]->lat,
+                                points[points.count()-1]->lon) < 100 ? true : false;
+
+    if (loop) {
+
+        code = QString("{ var latlng = new google.maps.LatLng(%1,%2);"
+                   "var image = new google.maps.MarkerImage('qrc:images/maps/loop.png');"
+                   "var marker = new google.maps.Marker({ icon: image, animation: google.maps.Animation.DROP, position: latlng });"
+                   "marker.setMap(map); }").arg(points[0]->lat,0,'g',GPS_COORD_TO_STRING).arg(points[0]->lon,0,'g',GPS_COORD_TO_STRING);
+        view->page()->mainFrame()->evaluateJavaScript(code);
+    } else {
+        // start / finish markers
+        code = QString("{ var latlng = new google.maps.LatLng(%1,%2);"
+                   "var image = new google.maps.MarkerImage('qrc:images/maps/cycling.png');"
+                   "var marker = new google.maps.Marker({ icon: image, animation: google.maps.Animation.DROP, position: latlng });"
+                   "marker.setMap(map); }").arg(points[0]->lat,0,'g',GPS_COORD_TO_STRING).arg(points[0]->lon,0,'g',GPS_COORD_TO_STRING);
+        view->page()->mainFrame()->evaluateJavaScript(code);
+
+        code = QString("{ var latlng = new google.maps.LatLng(%1,%2);"
+                   "var image = new google.maps.MarkerImage('qrc:images/maps/finish.png');"
+                   "var marker = new google.maps.Marker({ icon: image, animation: google.maps.Animation.DROP, position: latlng });"
+                   "marker.setMap(map); }").arg(points[points.count()-1]->lat,0,'g',GPS_COORD_TO_STRING).arg(points[points.count()-1]->lon,0,'g',GPS_COORD_TO_STRING);
+        view->page()->mainFrame()->evaluateJavaScript(code);
+    }
+
+    //
+    // STOPS - BEER AND BURRITO TIME (> 5 mins in same spot)
+    //
+    double stoplat=0, stoplon=0;
+    double laststoptime=0;
+    double lastlat=0, lastlon=0;
+    int stoptime=0;
+    static const int BEERANDBURRITO = 300; // anything longer than 5 minutes
+
+    foreach(RideFilePoint *rfp, myRideItem->ride()->dataPoints())
+    {
+        if (!rfp->lat || !rfp->lon) continue; // ignore blank values
+
+        if (!stoplat || !stoplon) { // register first gps co-ord
+            stoplat = rfp->lat;
+            stoplon = rfp->lon;
+            laststoptime = rfp->secs;
+        }
+
+        if (distanceBetween(rfp->lat, rfp->lon, stoplat, stoplon) < 20) {
+            if (rfp->secs - laststoptime > myRideItem->ride()->recIntSecs()) stoptime += rfp->secs - laststoptime;
+            else stoptime += myRideItem->ride()->recIntSecs();
+        } else if (rfp->secs - laststoptime > myRideItem->ride()->recIntSecs()) {
+            stoptime += rfp->secs - laststoptime;
+            stoplat = rfp->lat;
+            stoplon = rfp->lon;
+        } else {
+            stoptime = 0;
+            stoplat = rfp->lat;
+            stoplon = rfp->lon;
+        }
+
+        if (stoptime > BEERANDBURRITO) { // 3 minutes is more than a traffic light stop dude.
+
+            if ((!lastlat && !lastlon) || distanceBetween(lastlat, lastlon, stoplat, stoplon)>100) {
+                lastlat = stoplat;
+                lastlon = stoplon;
+                code = QString(
+                    "{ var latlng = new google.maps.LatLng(%1,%2);"
+                    "var image = new google.maps.MarkerImage('qrc:images/maps/cycling_feed.png');"
+                    "var marker = new google.maps.Marker({ icon: image, animation: google.maps.Animation.DROP, position: latlng });"
+                    "marker.setMap(map);"
+                "}").arg(rfp->lat,0,'g',GPS_COORD_TO_STRING).arg(rfp->lon,0,'g',GPS_COORD_TO_STRING);
+                view->page()->mainFrame()->evaluateJavaScript(code);
+                stoptime=0;
+            }
+            stoplat=stoplon=stoptime=0;
+        }
+        laststoptime = rfp->secs;
+    }
+
+
+    //
+    // INTERVAL MARKERS
+    //
+    if (context->athlete->allIntervalItems() == NULL) return; // none to do, we are all done then
+
+    int interval=0;
+    foreach (const RideFileInterval x, myRideItem->ride()->intervals()) {
+
+        int offset = myRideItem->ride()->intervalBegin(x);
+        code = QString(
+            "{"
+            "   var latlng = new google.maps.LatLng(%1,%2);"
+            "   var marker = new google.maps.Marker({ title: '%3', animation: google.maps.Animation.DROP, position: latlng });"
+            "   marker.setMap(map);"
+            "   markerList.push(marker);" // keep track of those suckers
+            "   google.maps.event.addListener(marker, 'click', function(event) { webBridge.toggleInterval(%4); });"
+            "   google.maps.event.addListener(marker, 'mouseover', function(event) { webBridge.hoverInterval(%4); });"
+            "   google.maps.event.addListener(marker, 'mouseout', function(event) { webBridge.clearHover(); });"
+            "}")
+                                    .arg(myRideItem->ride()->dataPoints()[offset]->lat,0,'g',GPS_COORD_TO_STRING)
+                                    .arg(myRideItem->ride()->dataPoints()[offset]->lon,0,'g',GPS_COORD_TO_STRING)
+                                    .arg(x.name)
+                                    .arg(interval)
+                                    ;
+        view->page()->mainFrame()->evaluateJavaScript(code);
+        interval++;
+    }
+
+    return;
+}
+
+void GoogleMapControl::zoomInterval(IntervalItem *which)
+{
+    RideItem *ride = myRideItem;
+
+    // null ride
+    if (!ride || !ride->ride()) return;
+
+    int start = ride->ride()->timeIndex(which->start);
+    int end = ride->ride()->timeIndex(which->stop);
+
+    // out of bounds
+    if (start < 0 || start > ride->ride()->dataPoints().count()-1 ||
+        end < 0 || end > ride->ride()->dataPoints().count()-1) return;
+
+    // Get the bounding rectangle for this interval
+    double minLat, minLon, maxLat, maxLon;
+    minLat = minLon = 1000;
+    maxLat = maxLon = -1000; // larger than 360
+
+    // get bounding co-ordinates for ride
+    for(int i=start; i<= end; i++) {
+        RideFilePoint *rfp = ride->ride()->dataPoints().at(i);
+        if (rfp->lat || rfp->lon) {
+            minLat = std::min(minLat,rfp->lat);
+            maxLat = std::max(maxLat,rfp->lat);
+            minLon = std::min(minLon,rfp->lon);
+            maxLon = std::max(maxLon,rfp->lon);
+        }
+    }
+
+    // now zoom to interval
+    QString code = QString("{ var southwest = new google.maps.LatLng(%1, %2);\n"
+                           "var northeast = new google.maps.LatLng(%3, %4);\n"
+                           "var bounds = new google.maps.LatLngBounds(southwest, northeast);\n"
+                           "map.fitBounds(bounds);\n }")
+                    .arg(minLat,0,'g',GPS_COORD_TO_STRING)
+                    .arg(minLon,0,'g',GPS_COORD_TO_STRING)
+                    .arg(maxLat,0,'g',GPS_COORD_TO_STRING)
+                    .arg(maxLon,0,'g',GPS_COORD_TO_STRING);
+    view->page()->mainFrame()->evaluateJavaScript(code);
+}
+
+// quick diag, used to debug code only
+void WebBridge::call(int count) { qDebug()<<"webBridge call:"<<count; }
+
+// how many intervals are highlighted?
+int
+WebBridge::intervalCount()
+{
+    int highlighted;
+    highlighted = 0;
+    RideItem *rideItem = gm->property("ride").value<RideItem*>();
+
+    if (context->athlete->allIntervalItems() == NULL ||
+        rideItem == NULL || rideItem->ride() == NULL) return 0; // not inited yet!
+
+    for (int i=0; i<context->athlete->allIntervalItems()->childCount(); i++) {
+        IntervalItem *current = dynamic_cast<IntervalItem *>(context->athlete->allIntervalItems()->child(i));
+        if (current != NULL) {
+            if (current->isSelected() == true) {
+                ++highlighted;
+            }
+        }
+    }
+    return highlighted;
+}
+
+// get a latlon array for the i'th selected interval
+QVariantList
+WebBridge::getLatLons(int i)
+{
+    QVariantList latlons;
+    int highlighted=0;
+    RideItem *rideItem = gm->property("ride").value<RideItem*>();
+
+    if (context->athlete->allIntervalItems() == NULL ||
+       rideItem ==NULL || rideItem->ride() == NULL) return latlons; // not inited yet!
+
+    if (i) {
+
+        // get for specific interval
+        for (int j=0; j<context->athlete->allIntervalItems()->childCount(); j++) {
+            IntervalItem *current = dynamic_cast<IntervalItem *>(context->athlete->allIntervalItems()->child(j));
+            if (current != NULL) {
+                if (current->isSelected() == true) {
+                    ++highlighted;
+
+                    // this one!
+                    if (highlighted==i) {
+
+                        // so this one is the interval we need.. lets
+                        // snaffle up the points in this section
+                        foreach (RideFilePoint *p1, rideItem->ride()->dataPoints()) {
+                            if (p1->secs+rideItem->ride()->recIntSecs() > current->start
+                                && p1->secs< current->stop) {
+
+                                if (p1->lat || p1->lon) {
+                                    latlons << p1->lat;
+                                    latlons << p1->lon;
+                                }
+                            }
+                        }
+                        return latlons;
+                    }
+                }
+            }
+        }
+    } else {
+
+        // get latlons for entire route
+        foreach (RideFilePoint *p1, rideItem->ride()->dataPoints()) {
+            if (p1->lat || p1->lon) {
+                latlons << p1->lat;
+                latlons << p1->lon;
+            }
+        }
+    }
+    return latlons;
+}
+
+// once the basic map and route have been marked, overlay markers, shaded areas etc
+void
+WebBridge::drawOverlays()
+{
+    // overlay the markers
+    gm->createMarkers();
+
+    // overlay a shaded route
+    gm->drawShadedRoute();
+}
+
+// interval marker was clicked on the map, toggle its display
+void
+WebBridge::toggleInterval(int x)
+{
+    IntervalItem *current = dynamic_cast<IntervalItem *>(context->athlete->allIntervalItems()->child(x));
+    if (current) current->setSelected(!current->isSelected());
+    return;
+}
+void 
+WebBridge::hoverInterval(int n)
+{
+    RideItem *rideItem = gm->property("ride").value<RideItem*>();
+    if (rideItem && rideItem->ride() && rideItem->ride()->intervals().count() > n) {
+        context->notifyIntervalHover(rideItem->ride()->intervals().at(n));
+    }
+}
+
+void 
+WebBridge::clearHover()
+{
+}
+
+QList<RideFilePoint*>
+WebBridge::searchPoint(double lat, double lng)
+{
+    QList<RideFilePoint*> list;
+
+    RideItem *rideItem = gm->property("ride").value<RideItem*>();
+
+    RideFilePoint *candidat = NULL;
+    foreach (RideFilePoint *p1, rideItem->ride()->dataPoints()) {
+        if (p1->lat == 0 && p1->lon == 0)
+            continue;
+
+        if (((p1->lat-lat> 0 && p1->lat-lat< 0.0001) || (p1->lat-lat< 0 && p1->lat-lat> -0.0001)) &&
+            ((p1->lon-lng> 0 && p1->lon-lng< 0.0001) || (p1->lon-lng< 0 && p1->lon-lng> -0.0001))) {
+            // Vérifie distance avec dernier candidat
+            candidat = p1;
+        } else if (candidat)  {
+            list.append(candidat);
+            candidat = NULL;
+        }
+    }
+
+    return list;
+}
+
+void
+WebBridge::hoverPath(double lat, double lng)
+{
+    if (point) {
+        QString name = QString(tr("Selection #%1 ")).arg(selection);
+
+        QTreeWidgetItem *allIntervals = context->athlete->mutableIntervalItems();
+        int count = allIntervals->childCount();
+
+        if (count > 0) {
+            IntervalItem *bottom = (IntervalItem *) allIntervals->child(count-1);
+            if (bottom->text(0).startsWith(name)) { //delete allIntervals->takeChild(count-1);
+
+                QList<RideFilePoint*> list = searchPoint(lat, lng);
+
+                if (list.count() > 0)  {
+
+                    RideFilePoint* secondPoint = list.at(0);
+
+                    if (secondPoint->secs>point->secs) {
+                        bottom->start = point->secs;
+                        bottom->stop = secondPoint->secs;
+                    } else {
+                        bottom->stop = point->secs;
+                        bottom->start = secondPoint->secs;
+                    }
+
+                    // overlay a shaded route
+                    gm->drawTempInterval(bottom);
+                 }
+            }
+        }
+
+
+
+
+
+        // add average power to the end of the selection name
+        //name += QString("(%1 watts)").arg(round((wattsTotal && arrayLength) ? wattsTotal/arrayLength : 0));
+
+
+        // now update the RideFileIntervals and all the plots etc
+        //context->athlete->updateRideFileIntervals();
+
+
+    }
+}
+
+void
+WebBridge::clickPath(double lat, double lng)
+{
+    selection++;
+    QString name = QString(tr("Selection #%1 ")).arg(selection);
+
+    RideItem *rideItem = gm->property("ride").value<RideItem*>();
+
+    QList<RideFilePoint*> list = searchPoint(lat, lng);
+
+    if (list.count() > 0)  {
+        point = list.at(0);
+
+        QTreeWidgetItem *allIntervals = context->athlete->mutableIntervalItems();
+
+        QTreeWidgetItem *last = new IntervalItem(rideItem->ride(), name, point->secs, point->secs, 0, 0,
+                                    allIntervals->childCount()+1);
+        last->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled);
+        allIntervals->addChild(last);
+
+        context->athlete->intervalTreeWidget()->clearSelection();
+        context->athlete->intervalTreeWidget()->setItemSelected(last, true);
+    }
+    else
+        point = NULL;
+}
+
+void
+WebBridge::mouseup()
+{
+    if (point) {
+        gm->clearTempInterval();
+        QTreeWidgetItem *allIntervals = context->athlete->mutableIntervalItems();
+        int count = allIntervals->childCount();
+
+        if (count > 0) {
+            IntervalItem *bottom = (IntervalItem *) allIntervals->child(count-1);
+            context->athlete->intervalTreeWidget()->setItemSelected(bottom, true);
+        }
+
+        context->athlete->updateRideFileIntervals();
+        point = NULL;
+    }  
+}
+
+
+bool
+GoogleMapControl::event(QEvent *event)
+{
+    // nasty nasty nasty hack to move widgets as soon as the widget geometry
+    // is set properly by the layout system, by default the width is 100 and 
+    // we wait for it to be set properly then put our helper widget on the RHS
+    if (event->type() == QEvent::Resize && geometry().width() != 100) {
+
+        // put somewhere nice on first show
+        if (firstShow) {
+            firstShow = false;
+            helperWidget()->move(mainWidget()->geometry().width()-275, 50);
+        }
+
+        // if off the screen move on screen
+        if (helperWidget()->geometry().x() > geometry().width()) {
+            helperWidget()->move(mainWidget()->geometry().width()-275, 50);
+        }
+    }
+    return QWidget::event(event);
 }

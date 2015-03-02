@@ -18,14 +18,20 @@
 
 #ifndef _RideImportWizard_h
 #define _RideImportWizard_h
+#include "GoldenCheetah.h"
 
 #include <QtGui>
+#include <QDialog>
+#include <QLabel>
+#include <QCheckBox>
 #include <QTableWidget>
+#include <QHeaderView>
 #include <QProgressBar>
 #include <QList>
 #include <QListIterator>
-#include <boost/scoped_ptr.hpp>
-#include "MainWindow.h"
+#include <QItemDelegate>
+#include "Context.h"
+#include "RideAutoImportConfig.h"
 
 // Dialog class to show filenames, import progress and to capture user input
 // of ride date and time
@@ -33,11 +39,16 @@
 class RideImportWizard : public QDialog
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
-    RideImportWizard(QList<QUrl> *urls, QDir &home, MainWindow *main, QWidget *parent = 0);
-    RideImportWizard(QList<QString> files, QDir &home, MainWindow *main, QWidget *parent = 0);
+    RideImportWizard(QList<QUrl> *urls, Context *context, QWidget *parent = 0);
+    RideImportWizard(QList<QString> files, Context *context, QWidget *parent = 0);
+    RideImportWizard(RideAutoImportConfig *dirs, Context *context, QWidget *parent = 0);
+
     ~RideImportWizard();
+    int getNumberOfFiles();  // get the number of files selected for processing
     int process();
 
 signals:
@@ -46,24 +57,36 @@ private slots:
     void abortClicked();
     void cancelClicked();
     void todayClicked(int index);
-    void overClicked();
+    // void overClicked(); // deprecate for this release... XXX
     void activateSave();
 
 private:
-    void init(QList<QString> files, QDir &home, MainWindow *main);
+    void init(QList<QString> files, Context *context);
+    bool moveFile(const QString &source, const QString &target);
+
     QList <QString> filenames; // list of filenames passed
+    int numberOfFiles; // number of files to be processed
     QList <bool> blanks; // record of which have a RideFileReader returned date & time
-    QDir home; // target directory
+    QDir homeImports; // target directory for source files
+    QDir homeActivities; // target directory for .JSON
+    QDir tmpActivities; // activitiy .JSON is stored here until rideCache() update was successfull
     bool aborted;
+    bool autoImportMode;
     QLabel *phaseLabel;
     QTableWidget *tableWidget;
+    QTableWidget *directoryWidget;
     QProgressBar *progressBar;
     QPushButton *abortButton; // also used for save and finish
     QPushButton *cancelButton; // cancel when asking for dates
     QComboBox *todayButton;    // set date to today when asking for dates
-    QCheckBox *overFiles;      // chance to set overwrite when asking for dates
-    bool overwriteFiles; // flag to overwrite files from checkbox
-    MainWindow *mainWindow; // caller
+    // QCheckBox *overFiles;      // chance to set overwrite when asking for dates // deprecate for this release... XXX
+    // bool overwriteFiles; // flag to overwrite files from checkbox               // deprecate for this release... XXX
+    Context *context; // caller
+    RideAutoImportConfig *importConfig;
+
+    QStringList deleteMe; // list of temp files created during import
+
+
 };
 
 // Item Delegate for Editing Date and Time of Ride inside the
@@ -72,6 +95,8 @@ private:
 class RideDelegate : public QItemDelegate
 {
     Q_OBJECT
+    G_OBJECT
+
 
 public:
     RideDelegate(int dateColumn, QObject *parent = 0);

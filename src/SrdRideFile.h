@@ -18,11 +18,13 @@
 
 #ifndef _SrdRideFile_h
 #define _SrdRideFile_h
+#include "GoldenCheetah.h"
 
 #include "RideFile.h"
 
 struct SrdFileReader : public RideFileReader {
-    virtual RideFile *openRideFile(QFile &file, QStringList &errors) const;
+    virtual RideFile *openRideFile(QFile &file, QStringList &errors, QList<RideFile*>* = 0) const; 
+    bool hasWrite() const { return false; }
 };
 
 //===================================================================================

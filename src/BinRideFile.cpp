@@ -20,9 +20,9 @@
 #include <QSharedPointer>
 #include <QMap>
 #include <QSet>
-#include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <time.h>
 
 #define RECORD_TYPE__META 0
 #define RECORD_TYPE__RIDE_DATA 1
@@ -74,6 +74,13 @@
 #define FORMAT_ID__ALTITUDE 39
 #define FORMAT_ID__THRESHOLD_POWER 40
 
+#define FORMAT_ID__UNKNOW_41 41
+#define FORMAT_ID__UNKNOW_42 42
+#define FORMAT_ID__UNKNOW_43 43
+#define FORMAT_ID__UNKNOW_44 44
+#define FORMAT_ID__UNKNOW_45 45
+#define FORMAT_ID__POWER_PEDAL_BALANCE 46
+#define FORMAT_ID__UNKNOW_47 47
 
 static int binFileReaderRegistered =
     RideFileFactory::instance().registerReader(
@@ -172,15 +179,22 @@ struct BinFileReaderState
             global_format_identifiers.insert(FORMAT_ID__RAW_BARO_SENSOR,  "Raw Baro Sensor Value");
             global_format_identifiers.insert(FORMAT_ID__ALTITUDE,  "Altitude");
             global_format_identifiers.insert(FORMAT_ID__THRESHOLD_POWER,  "Threshold power");
+
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_41,  "Unknow 41");
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_42,  "Unknow 42");
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_43,  "Unknow 43");
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_44,  "Unknow 44");
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_45,  "Unknow 45");
+            global_format_identifiers.insert(FORMAT_ID__POWER_PEDAL_BALANCE,  "Power Pedal Balance");
+            global_format_identifiers.insert(FORMAT_ID__UNKNOW_47,  "Unknow 47");
+
         }
     }
-
-    struct TruncatedRead {};
 
     int read_byte(int *count = NULL, int *sum = NULL) {
         char c;
         if (file.read(&c, 1) != 1)
-            throw TruncatedRead();
+            return -1;
         if (sum)
             *sum += (0xff & c);
         if (count)
@@ -191,32 +205,42 @@ struct BinFileReaderState
     int read_double_byte(int *count = NULL, int *sum = NULL) {
         char c1,c2;
         if (file.read(&c1, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c2, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
 
         if (sum)
             *sum += (0xff & c1) + (0xff & c2);
-        if (count)
-            *count += 2;
-        
+
         return  256*(0xff & c1) + (0xff & c2);
     }
 
     int read_four_byte(int *count = NULL, int *sum = NULL) {
         char c1,c2,c3,c4;
         if (file.read(&c1, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c2, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c3, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c4, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
+
         if (sum)
             *sum += (0xff & c1) + (0xff & c2) + (0xff & c3) + (0xff & c4);
-        if (count)
-            *count += 4;
+
 
         return 256*256*256*(0xff & c1) + 256*256*(0xff & c2) + 256*(0xff & c3) + (0xff & c4);
     }
@@ -224,27 +248,38 @@ struct BinFileReaderState
     int read_date(int *count = NULL, int *sum = NULL) {
         char c1,c2,c3,c4,c5,c6,c7;
         if (file.read(&c1, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c2, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c3, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c4, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c5, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c6, 1) != 1)
-            throw TruncatedRead();
+           return -1;
+        if (count)
+            *count += 1;
         if (file.read(&c7, 1) != 1)
-            throw TruncatedRead();
+            return -1;
+        if (count)
+            *count += 1;
 
         if (sum)
             *sum += (0xff & c1) + (0xff & c2) + (0xff & c3) + (0xff & c4) + (0xff & c5) + (0xff & c6) + (0xff & c7);
 
-        if (count)
-            *count += 7;
-
-        QDateTime dateTime(QDate((0xff & c1)*256+(0xff & c2), (0xff & c3), (0xff & c4)), QTime((0xff & c5), (0xff & c6), (0xff & c7)), Qt::UTC);
+        QDateTime dateTime(QDate((0xff & c1)*256+(0xff & c2), (0xff & c3), (0xff & c4)), QTime((0xff & c5), (0xff & c6), (0xff & c7)), Qt::LocalTime);
 
         return dateTime.toTime_t();
     }
@@ -254,7 +289,7 @@ struct BinFileReaderState
         int i = 0;
         QString deviceInfo = "";
         QDateTime t;
-        
+
         foreach(const BinField &field, def.fields) {
             if (!global_format_identifiers.contains(field.id)) {
                 unknown_format_identifiers.insert(field.id);
@@ -308,7 +343,9 @@ struct BinFileReaderState
                             deviceInfo += QString("Resistance Unit Id %1\n").arg(value);
                         break;
                     case FORMAT_ID__WORKOUT_ID :
-                        rideFile->setTag("Workout Code", QString(value));
+                        // Commented out since value is numeric and in no way
+                        // represents a Workout Code.
+                        //rideFile->setTag("Workout Code", QString(value));
                         break;
                     case FORMAT_ID__USER_WEIGHT :
                         unused_format_identifiers_for_record_types[def.format_identifier].insert(field.id);
@@ -349,6 +386,12 @@ struct BinFileReaderState
                     case FORMAT_ID__THRESHOLD_POWER :
                         deviceInfo += QString("Threshold Power %1W\n").arg(value);
                         break;
+                    case FORMAT_ID__UNKNOW_41 :
+                        break;
+                    case FORMAT_ID__UNKNOW_42 :
+                        break;
+                    case FORMAT_ID__UNKNOW_43 :
+                        break;
 
                     default:
                         unexpected_format_identifiers_for_record_types[def.format_identifier].insert(field.id);
@@ -362,6 +405,8 @@ struct BinFileReaderState
         int i = 0;
         double secs = 0, alt = 0, cad = 0, km = 0, grade = 0, hr = 0;
         double nm = 0, kph = 0, watts = 0;
+        double temperature = RideFile::NoTemp;
+        double lrbalance = 0.0;
 
         foreach(const BinField &field, def.fields) {
             if (!global_format_identifiers.contains(field.id)) {
@@ -373,6 +418,7 @@ struct BinFileReaderState
                 switch (field.id) {
                     case FORMAT_ID__RIDE_DISTANCE :
                         km = value/10000.0;
+                        break;
                     case FORMAT_ID__RIDE_TIME :
                         secs = value / 1000.0;
                         break;
@@ -381,12 +427,13 @@ struct BinFileReaderState
                             watts = value;
                         break;
                     case FORMAT_ID__TORQUE :
-                        nm = value;
+                        if (value < 4095) // no value
+                            nm = value;
                         break;
                     case FORMAT_ID__SPEED :
-                        value = value*3.6/100.0;
-                        if (value < 145) // Limit for data error
-                            kph = value;
+                        kph = value*3.6/100.0;
+                        if (kph > 145) // Limit for data error
+                            kph = 0;
                         break;
                     case FORMAT_ID__CADENCE :
                         if (value < 255) // Limit for data error
@@ -397,13 +444,35 @@ struct BinFileReaderState
                             hr = value;
                         break;
                     case FORMAT_ID__GRADE :
-                        grade = value;
+                        if (value>37768)
+                            value = value - 256*256;
+                        grade = value/100.0;
+
                         break;
                     case FORMAT_ID__ALTITUDE :
                         alt = value/10.0;
                            break;
                     case FORMAT_ID__ALTITUDE_OLD :
-                        alt = value/10.0;
+                        if (alt == 0.0)
+                            alt = value/10.0;
+                        break;
+                    case FORMAT_ID__UNKNOW_44 :
+                        //qDebug() << "44 : " << value;
+                        break;
+                    case FORMAT_ID__UNKNOW_45 :
+                        //qDebug() << "45 : " << value;
+                        break;
+                    case FORMAT_ID__POWER_PEDAL_BALANCE :
+                        if (value < 0xff) {  // no value
+                            int pedalIndex = (0x40 & value);
+                            value = (0x3f & value);
+                            if (pedalIndex == 0x40)
+                                value = 100-value;
+                            lrbalance = value;
+                        }
+                        break;
+                    case FORMAT_ID__UNKNOW_47 :
+                        //qDebug() << "47 : " << value;
                         break;
                     default:
                         unexpected_format_identifiers_for_record_types[def.format_identifier].insert(field.id);
@@ -412,19 +481,23 @@ struct BinFileReaderState
         }
 
         double headwind = 0.0;
+
+
         int interval = 0;
         int lng = 0;
         int lat = 0;
 
-        rideFile->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, lng, lat, headwind, interval);
-        //printf("addPoint time %f hr %f speed %f dist %f alt %f\n", secs, hr, kph, km, alt);
+        // the 0.0 values are L and R torque efficiency and pedal smoothness which are not available in this format
+        rideFile->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, lng, lat, headwind, grade, temperature, lrbalance, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, interval);
     }
 
     void decodeSparseData(const BinDefinition &def, const std::vector<int> values) {
         int i = 0;
+
+        double secs = 0.0;
         int temperature_count = 0;
         double temperature = 0.0;
-        
+
         foreach(const BinField &field, def.fields) {
             if (!global_format_identifiers.contains(field.id)) {
                 unknown_format_identifiers.insert(field.id);
@@ -435,9 +508,12 @@ struct BinFileReaderState
                         // use for average
                         temperature += value/10.0;
                         temperature_count ++;
+
+                        rideFile->dataPoints().at(rideFile->timeIndex(secs))->temp = temperature;
+                        rideFile->setDataPresent(RideFile::temp, true);
                         break;
                     case FORMAT_ID__RIDE_TIME :
-                        unused_format_identifiers_for_record_types[def.format_identifier].insert(field.id);
+                        secs = value / 1000.0;
                         break;
 
                     default:
@@ -484,7 +560,6 @@ struct BinFileReaderState
                 unknown_format_identifiers.insert(field.id);
             } else {
                 int value = values[i++];
-           
                 bool b0 = (value % 2);
                 bool b1 = (value / 2>1);
                 bool b2 = (value / 4>1);
@@ -493,12 +568,12 @@ struct BinFileReaderState
                 bool b5 = (value / 32>1);
                 bool b6 = (value / 64>1);
                 bool b7 = (value / 128>1);
-                
+
                 QString b = QString("DataError : %1 %2 %3 %4 %5 %6 %7 %8").arg(b0?"0":"").arg(b1?"1":"").arg(b2?"2":"").arg(b3?"3":"").arg(b4?"4":"").arg(b5?"5":"").arg(b6?"6":"").arg(b7?"7":"");
-                
+
                 switch (field.id) {
                     case FORMAT_ID__DROPOUT_FLAGS :
-                        
+
                         //errors << QString("DataError field.id %1 value %2").arg(field.id).arg(b);
                         unused_format_identifiers_for_record_types[def.format_identifier].insert(field.id);
                         break;
@@ -538,9 +613,18 @@ struct BinFileReaderState
 
         int record_type = read_byte(&bytes_read, &sum); // Always 0xFF
 
-        if (record_type == 255) {
+        if (record_type == -1) {
+           errors << QString("Truncated file");
+           //bytes_read++;
+           return bytes_read;
+        } else if (record_type == 255) {
             int format_identifier = read_byte(&bytes_read, &sum);
-            if (!global_record_types.contains(format_identifier)) {
+
+            if (format_identifier == -1) {
+               errors << QString("Truncated file");
+               //bytes_read++;
+               return bytes_read;
+            } else if (!global_record_types.contains(format_identifier)) {
                 errors << QString("unknown format_identifier %1").arg(format_identifier);
                 stop = true;
                 return bytes_read;
@@ -565,7 +649,10 @@ struct BinFileReaderState
             int checksum = read_double_byte(&bytes_read);
             //printf("- checksum %d : %d\n", checksum, sum);
 
-            if (checksum != sum) {
+            if (checksum == -1) {
+               errors << QString("Truncated file");
+               return bytes_read;
+            } else if (checksum != sum) {
                 errors << QString("bad checksum: %1").arg(sum);
                 stop = true;
                 return bytes_read;
@@ -602,7 +689,10 @@ struct BinFileReaderState
                  int checksum = read_double_byte(&bytes_read);
                  //printf("- checksum %d : %d\n", checksum, sum);
 
-                if (checksum != sum) {
+                 if (checksum == -1) {
+                    errors << QString("Truncated file");
+                    return bytes_read;
+                 } else if (checksum != sum) {
                    errors << QString("bad checksum: %1").arg(sum);
                    stop = true;
                    return bytes_read;
@@ -631,6 +721,7 @@ struct BinFileReaderState
         errors.clear();
         rideFile = new RideFile;
         rideFile->setDeviceType("Joule");
+        rideFile->setFileFormat("CycleOps Joule (bin)");
 
         if (!file.open(QIODevice::ReadOnly)) {
             delete rideFile;
@@ -651,17 +742,19 @@ struct BinFileReaderState
             rideFile->addInterval(last_interval_secs, rideFile->dataPoints().last()->secs, QString("%1").arg(interval));
         }
         if (stop) {
+            file.close();
             delete rideFile;
             return NULL;
         }
         else {
+            file.close();
             foreach(int num, unknown_record_types) {
                 errors << QString("unknow record type %1; ignoring it").arg(num);
             }
             foreach(int num, unknown_format_identifiers) {
                 errors << QString("unknow format identifier %1; ignoring it").arg(num);
             }
-            foreach(int num, unused_record_types) {
+            /*foreach(int num, unused_record_types) {
                 errors << QString("unused record type \"%1\" (%2)\n").arg(global_record_types[num].toAscii().constData())
                                                                      .arg(num);
             }
@@ -674,7 +767,7 @@ struct BinFileReaderState
                            .arg(global_record_types[record_type].toAscii().constData())
                            .arg(record_type);
                 }
-            }
+            }*/
             foreach(int num, unexpected_record_types) {
                 errors << QString("unexpected record type %1 (%2)\n").arg(global_record_types[num]).arg(num);
             }
@@ -682,9 +775,9 @@ struct BinFileReaderState
                 foreach(int num, set) {
                     int record_type = unexpected_format_identifiers_for_record_types.keys(set).takeFirst();
                     errors << QString("unexpected format identifier \"%1\" (%2) in \"%3\" (%4)\n")
-                            .arg(global_format_identifiers[num].toAscii().constData())
+                            .arg(global_format_identifiers[num].toLatin1().constData())
                             .arg(num)
-                            .arg(global_record_types[record_type].toAscii().constData())
+                            .arg(global_record_types[record_type].toLatin1().constData())
                             .arg(record_type);
                 }
             }
@@ -696,7 +789,7 @@ struct BinFileReaderState
 QMap<int,QString> BinFileReaderState::global_record_types;
 QMap<int,QString> BinFileReaderState::global_format_identifiers;
 
-RideFile *BinFileReader::openRideFile(QFile &file, QStringList &errors) const
+RideFile *BinFileReader::openRideFile(QFile &file, QStringList &errors, QList<RideFile*>*) const
 {
     QSharedPointer<BinFileReaderState> state(new BinFileReaderState(file, errors));
     return state->run();

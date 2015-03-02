@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009 Justin F. Knotzke (jknotzke@shampoo.ca)
+ * Copyright (c) 2010 Justin Knotzke (jknotzke@shampoo.ca)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -17,24 +17,27 @@
  */
 
 #include "TwitterDialog.h"
+#include "Athlete.h"
+#include "Context.h"
 #include "Settings.h"
-#include <QHttp>
-#include <QUrl>
 #include "TimeUtils.h"
+#include <QUrl>
+#include <kqoauthmanager.h>
+#include <kqoauthrequest.h>
 
-TwitterDialog::TwitterDialog(MainWindow *mainWindow, RideItem *item) :
-    mainWindow(mainWindow)
+
+TwitterDialog::TwitterDialog(Context *context, RideItem *item) :
+    context(context)
 {
     ride = item;
-    settings = GetApplicationSettings();
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowTitle("Tweet Your Ride");
+    setWindowTitle(tr("Tweet Activity"));
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
     QGroupBox *groupBox = new QGroupBox(tr("Choose which metrics you wish to tweet: "));
 
     workoutTimeChk = new QCheckBox(tr("Workout Time"));
-    timeRidingChk = new QCheckBox(tr("Time Riding"));
+    timeRidingChk = new QCheckBox(tr("Time Moving"));
     totalDistanceChk = new QCheckBox(tr("Total Distance"));
     elevationGainChk = new QCheckBox(tr("Elevation Gain"));
     totalWorkChk = new QCheckBox(tr("Total Work (kJ)"));
@@ -69,7 +72,7 @@ TwitterDialog::TwitterDialog(MainWindow *mainWindow, RideItem *item) :
     twitterMetricLayout->addWidget(twitterLengthLabel);
 
     QHBoxLayout *buttonLayout = new QHBoxLayout;
-    tweetButton = new QPushButton(tr("&Tweet Ride"), this);
+    tweetButton = new QPushButton(tr("&Tweet Activity"), this);
     buttonLayout->addWidget(tweetButton);
     cancelButton = new QPushButton(tr("&Cancel"), this);
     buttonLayout->addWidget(cancelButton);
@@ -92,18 +95,34 @@ TwitterDialog::TwitterDialog(MainWindow *mainWindow, RideItem *item) :
     connect(maxPowerChk, SIGNAL(stateChanged(int)),  this, SLOT(onCheck(int)));
     connect(maxHRMChk, SIGNAL(stateChanged(int)),  this, SLOT(onCheck(int)));
     connect(twitterMessageEdit, SIGNAL(textChanged(QString)),  this, SLOT(tweetMsgChange(QString)));
+
+    oauthRequest = new KQOAuthRequest();
+    oauthManager = new KQOAuthManager();
+
+    connect(oauthManager, SIGNAL(requestReady(QByteArray)),
+            this, SLOT(onRequestReady(QByteArray)));
+    connect(oauthManager, SIGNAL(authorizedRequestDone()),
+            this, SLOT(onAuthorizedRequestDone()));
+
+
 }
+
+TwitterDialog::~TwitterDialog() {
+    delete oauthRequest;
+    delete oauthManager;
+}
+
 void
 TwitterDialog::tweetCurrentRide()
 {
 
-    QString strToken = settings->value(GC_TWITTER_TOKEN).toString();
-    QString strSecret = settings->value(GC_TWITTER_SECRET).toString();
+    QString strToken = appsettings->cvalue(context->athlete->cyclist, GC_TWITTER_TOKEN).toString();
+    QString strSecret = appsettings->cvalue(context->athlete->cyclist, GC_TWITTER_SECRET).toString();
 
-    QString s_token = QString(strToken);
-    QString s_secret = QString(strSecret);
-
-    if(s_token.isEmpty() || s_secret.isEmpty()) {
+    if(strToken.isEmpty() || strSecret.isEmpty() ||
+       strToken == "" || strToken == "0" ||
+       strSecret == "" || strSecret == "0" )
+    {
       #ifdef Q_OS_MACX
       #define GC_PREF tr("Golden Cheetah->Preferences")
       #else
@@ -115,142 +134,110 @@ TwitterDialog::tweetCurrentRide()
       return;
     }
 
-    char *postarg = NULL;
-    QString qurl = "http://api.twitter.com/1/statuses/update.json?status=";
-
     QString twitterMsg = getTwitterMessage();
 
     if(twitterMsg.length() > 140) {
-      QMessageBox tweetlengtherr(QMessageBox::Critical, tr("Tweet Length Error"), tr("Tweet must be 140 characters or fewer."));
+      QMessageBox tweetlengtherr(QMessageBox::Critical, tr("Tweet Length Error"), tr("Tweet must be 140 characters or less."));
       tweetlengtherr.exec();
       return;
     }
 
-    const QString strUrl = QUrl::toPercentEncoding(twitterMsg);
-    qurl.append(strUrl);
-    const char *req_url = oauth_sign_url2(qurl.toLatin1(), &postarg, OA_HMAC, NULL, GC_TWITTER_CONSUMER_KEY, GC_TWITTER_CONSUMER_SECRET, s_token.toLatin1(), s_secret.toLatin1());
-    const char *strreply = oauth_http_post(req_url,postarg);
+    oauthRequest->initRequest(KQOAuthRequest::AuthorizedRequest, QUrl("https://api.twitter.com/1.1/statuses/update.json"));
 
-    QString post_reply = QString(strreply);
+    oauthRequest->setConsumerKey(GC_TWITTER_CONSUMER_KEY);
+    oauthRequest->setConsumerSecretKey(GC_TWITTER_CONSUMER_SECRET);
 
-    if(!post_reply.contains("created_at", Qt::CaseInsensitive)) {
-      QMessageBox oautherr(QMessageBox::Critical, tr("Error Posting Tweet"), tr("There was an error connecting to Twitter.  Check your network connection and try again."));
-      oautherr.setDetailedText(post_reply);
-      oautherr.exec();
-      return;
+    // set the user token and secret
+    oauthRequest->setToken(strToken);
+    oauthRequest->setTokenSecret(strSecret);
+
+    KQOAuthParameters params;
+    params.insert("status", twitterMsg);
+    oauthRequest->setAdditionalParameters(params);
+
+    oauthManager->executeRequest(oauthRequest);
+    if (oauthManager->lastError() != KQOAuthManager::NoError) {
+        // handle errors
+        QString error = QString(tr("Internal error in OAuth request - NULL, invalid Endpoint or invalid request"));
+        QMessageBox oautherr(QMessageBox::Critical, tr("OAuth Error"), error);
+        oautherr.exec();
     }
-
-    if(postarg) free(postarg);
-
-    accept();
 
 }
 
+
+void TwitterDialog::onAuthorizedRequestDone() {
+    // qDebug() << "Request sent to Twitter!";
+}
+
+
+void TwitterDialog::onRequestReady(QByteArray response) {
+    //qDebug() << "Response from the service: " << response;
+    QString r = response;
+    // check for errors first
+    if (r.contains("{\"errors\":", Qt::CaseInsensitive))
+    {
+        QMessageBox oautherr(QMessageBox::Critical, tr("Error Posting Tweet"),
+             tr("There was an error connecting to Twitter.  Check your network connection and try again."));
+             oautherr.setDetailedText(r); // probably blank
+        oautherr.exec();
+    } else if (r.contains("created_at", Qt::CaseInsensitive))
+    {
+        QMessageBox oauthsuccess(QMessageBox::Information, tr("Tweet sent"),
+             tr("Tweet successfully sent."));
+        oauthsuccess.exec();
+    }
+}
+
+
+
 QString TwitterDialog::getTwitterMessage()
 {
-    RideMetricPtr m;
-    double tmp;
-    QString twitterMsg;
-    QVariant unit = settings->value(GC_UNIT);
-    bool useMetricUnits = (unit.toString() == "Metric");
+    RideMetricFactory &factory = RideMetricFactory::instance();
+    QString twitterMesg;
 
-    if(workoutTimeChk->isChecked())
-    {
-        m = ride->metrics.value("workout_time");
-        tmp = round(m->value(true));
-        QString msg = QString("Workout Time: %1").arg(time_to_string(tmp));
-        twitterMsg.append(msg + " ");
-    }
+    RideItem *ride = const_cast<RideItem*>(context->currentRideItem());
 
-    if(timeRidingChk->isChecked())
-    {
-        m = ride->metrics.value("time_riding");
-        tmp = round(m->value(true));
-        QString msg = QString("Time Riding: %1").arg(time_to_string(tmp));
-        twitterMsg.append(msg + " ");
-    }
+    struct {
+        QString name;
+        QCheckBox *chk;
+        QString words;
+    } worklist[] = {
+        { "workout_time", workoutTimeChk, tr("Duration: %1 ") },
+        { "time_riding", timeRidingChk, tr("Time Moving: %1 ") },
+        { "total_distance", totalDistanceChk, tr("Distance: %1 ") },
+        { "elevation_gain", elevationGainChk, tr("Climbing: %1 ") },
+        { "total_work", totalWorkChk, tr("Work: %1 ") },
+        { "average_speed", averageSpeedChk, tr("Avg Speed: %1 ") },
+        { "average_power", averagePowerChk, tr("Avg Power: %1 ") },
+        { "average_hr", averageHRMChk, tr("Avg HR: %1 ") },
+        { "average_cad", averageCadenceChk, tr("Avg Cadence: %1 ") },
+        { "max_power", maxPowerChk, tr("Max Power: %1 ") },
+        { "max_heartrate", maxHRMChk, tr("Max HR: %1 ") },
+        { "", NULL, "" }
+    };
 
-    if(totalDistanceChk->isChecked())
-    {
-        m = ride->metrics.value("total_distance");
-        QString msg = QString("Total Distance: %1" + (useMetricUnits ? tr("km") : tr("mi"))).arg(m->value(useMetricUnits),1,'f',1);
-        twitterMsg.append(msg + " ");
-    }
+    // construct the string
+    for (int i=0; worklist[i].chk != NULL; i++) {
 
-    if(elevationGainChk->isChecked())
-    {
-        m = ride->metrics.value("elevation_gain");
-        tmp = round(m->value(useMetricUnits));
-        QString msg = QString("Elevation Gained: %1"+ (useMetricUnits ? tr("m") : tr("ft"))).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(totalWorkChk->isChecked())
-    {
-        m = ride->metrics.value("total_work");
-        tmp = round(m->value(true));
-        QString msg = QString("Total Work: %1"+ tr("kJ")).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(averageSpeedChk->isChecked())
-    {
-        m = ride->metrics.value("average_speed");
-        QString msg = QString("Average Speed: %1"+ (useMetricUnits ? tr("km/h") : tr("mph"))).arg(m->value(useMetricUnits),1,'f',1);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(averagePowerChk->isChecked())
-    {
-        m = ride->metrics.value("average_power");
-        tmp = round(m->value(true));
-        QString msg = QString("Average Power: %1 "+ tr("watts")).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(averageHRMChk->isChecked())
-    {
-        m = ride->metrics.value("average_hr");
-        tmp = round(m->value(true));
-        QString msg = QString("Average Heart Rate: %1"+ tr("bpm")).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(averageCadenceChk->isChecked())
-    {
-        m = ride->metrics.value("average_cad");
-        tmp = round(m->value(true));
-        QString msg = QString("Average Cadence: %1"+ tr("rpm")).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(maxPowerChk->isChecked())
-    {
-        m = ride->metrics.value("max_power");
-        tmp = round(m->value(true));
-        QString msg = QString("Max Power: %1 "+ tr("watts")).arg(tmp);
-        twitterMsg.append(msg + " ");
-    }
-
-    if(maxHRMChk->isChecked())
-    {
-        m = ride->metrics.value("max_heartrate");
-        tmp = round(m->value(true));
-        QString msg = QString("Max Heart Rate: %1"+ tr("bpm")).arg(tmp);
-        twitterMsg.append(msg + " ");
+        if(worklist[i].chk->isChecked()) {
+            double value = ride->getForSymbol(worklist[i].name);
+            RideMetric *m = const_cast<RideMetric*>(factory.rideMetric(worklist[i].name));
+            m->setValue(value);
+            twitterMesg.append(QString(worklist[i].words).arg(m->toString(context->athlete->useMetricUnits)));
+        }
     }
 
     QString msg = twitterMessageEdit->text();
-    if(!msg.endsWith(" "))
-        msg.append(" ");
+    if(!msg.endsWith(" ")) msg.append(" ");
 
-    QString entireTweet = QString(msg + twitterMsg + "#goldencheetah");
+    QString entireTweet = QString(msg + twitterMesg + "#goldencheetah");
 
     return entireTweet;
 
 }
 
-void TwitterDialog::onCheck(int state)
+void TwitterDialog::onCheck(int /*state*/)
 {
     QString twitterMessage = getTwitterMessage();
     int tweetLength = twitterMessage.length();

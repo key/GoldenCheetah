@@ -32,7 +32,7 @@ static int srdFileReaderRegistered =
     RideFileFactory::instance().registerReader(
         "srd", "Polar SRD files", new SrdFileReader());
 
-RideFile *SrdFileReader::openRideFile(QFile &file, QStringList &errorStrings) const
+RideFile *SrdFileReader::openRideFile(QFile &file, QStringList &errorStrings, QList<RideFile*>*) const
 {
     workout_t *      w;
     S710_Filter      filter = S710_FILTER_OFF;
@@ -64,6 +64,7 @@ RideFile *SrdFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
             result->setDeviceType("Polar HRM");
             break;
         }
+        result->setFileFormat("Polar SRD files (srd)");
 
         //
         // metadata variables
@@ -91,7 +92,7 @@ RideFile *SrdFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
             km = w->dist_data[i];
 
             // add to ride
-            result->appendPoint(time, cad, hr, km, kph, nm, watts, alt, lon, lat, wind, 0);
+            result->appendPoint(time, cad, hr, km, kph, nm, watts, alt, lon, lat, wind, 0.0, RideFile::NoTemp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0);
 
             // keep a track of time
             time += w->recording_interval;

@@ -19,11 +19,103 @@
 #include "RideMetric.h"
 #include "BestIntervalDialog.h"
 #include "Zones.h"
-#include <math.h>
+#include <cmath>
+#include <QApplication>
 
-#define tr(s) QObject::tr(s)
+class FatigueIndex : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(FatigueIndex)
+    double maxp;
+    double minp;
+
+    public:
+
+    FatigueIndex() : maxp(0.0), minp(10000)
+    {
+        setType(RideMetric::Average);
+        setSymbol("power_fatigue_index");
+        setInternalName("Fatigue Index");
+        setName(tr("Fatigue Index"));
+        setMetricUnits(tr("%"));
+        setPrecision(1); // e.g. 99.9%
+        setImperialUnits(tr("%"));
+
+    }
+    void compute(const RideFile *ride, const Zones *, int,
+                 const HrZones *, int,
+                 const QHash<QString,RideMetric*> &,
+                 const Context *) {
+
+        if (ride->dataPoints().isEmpty() || !ride->areDataPresent()->watts) {
+            // no data
+            setValue(0.0);
+
+        } else {
+
+            // find peak and work from that
+            foreach(const RideFilePoint *point, ride->dataPoints()) {
+                if (point->watts > maxp && point->watts != 0) minp = maxp = point->watts;
+            }
+
+            // now find min after peak
+            bool hitpeak = false;
+            foreach(const RideFilePoint *point, ride->dataPoints()) {
+                if (hitpeak == false && point->watts >= maxp) hitpeak = true;
+                if (hitpeak == true && point->watts < minp && point->watts != 0) minp = point->watts;
+            }
+
+            if (minp > maxp) setValue(0.00); // minp wasn't changed, all zeroes?
+            else setValue(100 * ((maxp-minp)/maxp)); // as a percentage
+        }
+    }
+    RideMetric *clone() const { return new FatigueIndex(*this); }
+};
+
+class PacingIndex : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(PacingIndex)
+
+    double maxp;
+    double count, total;
+
+    public:
+
+    PacingIndex() : maxp(0.0), count(0), total(0)
+    {
+        setType(RideMetric::Average);
+        setSymbol("power_pacing_index");
+        setInternalName("Pacing Index");
+        setName(tr("Pacing Index"));
+        setMetricUnits(tr("%"));
+        setPrecision(1); // e.g. 99.9%
+        setImperialUnits(tr("%"));
+
+    }
+    void compute(const RideFile *ride, const Zones *, int,
+                 const HrZones *, int,
+                 const QHash<QString,RideMetric*> &,
+                 const Context *) {
+
+        if (ride->dataPoints().isEmpty() || !ride->areDataPresent()->watts) {
+            // no data
+            setValue(0.0);
+
+        } else {
+
+            // find peak and work from that
+            foreach(const RideFilePoint *point, ride->dataPoints()) {
+                if (point->watts > maxp && point->watts != 0) maxp = point->watts;
+                total += point->watts;
+                count++;
+            }
+
+            if (!count || !total) setValue(0.00); // minp wasn't changed, all zeroes?
+            else setValue(((total/count) / maxp) * 100.00f);
+        }
+    }
+    RideMetric *clone() const { return new PacingIndex(*this); }
+};
 
 class PeakPower : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower)
     double watts;
     double secs;
 
@@ -32,154 +124,451 @@ class PeakPower : public RideMetric {
     PeakPower() : watts(0.0), secs(0.0)
     {
         setType(RideMetric::Peak);
-        setMetricUnits(tr("watts"));
-        setImperialUnits(tr("watts"));
     }
     void setSecs(double secs) { this->secs=secs; }
-    void compute(const RideFile *ride, const Zones *, int, const HrZones *, int,
-                 const QHash<QString,RideMetric*> &) {
-        QList<BestIntervalDialog::BestInterval> results;
-        BestIntervalDialog::findBests(ride, secs, 1, results);
-        if (results.count() > 0 && results.first().avg < 3000) watts = results.first().avg;
-        else watts = 0.0;
+    void compute(const RideFile *ride, const Zones *, int,
+                 const HrZones *, int,
+                 const QHash<QString,RideMetric*> &,
+                 const Context *) {
+
+        if (!ride->dataPoints().isEmpty()) {
+            QList<BestIntervalDialog::BestInterval> results;
+            BestIntervalDialog::findBests(ride, secs, 1, results);
+            if (results.count() > 0 && results.first().avg < 3000) watts = results.first().avg;
+            else watts = 0.0;
+        } else {
+            watts = 0.0;
+        }
         setValue(watts);
     }
     RideMetric *clone() const { return new PeakPower(*this); }
 };
 
-class CriticalPower : public PeakPower {
+class PeakPower60m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower60m)
     public:
-        CriticalPower()
+        PeakPower60m()
         {
             setSecs(3600);
             setSymbol("60m_critical_power");
-            setName(tr("60 min Peak Power"));
+            setInternalName("60 min Peak Power");
         }
-        RideMetric *clone() const { return new CriticalPower(*this); }
+        void initialize () {
+            setName(tr("60 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
+        }
+        RideMetric *clone() const { return new PeakPower60m(*this); }
 };
 
 class PeakPower1s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower1s)
     public:
         PeakPower1s()
         {
             setSecs(1);
             setSymbol("1s_critical_power");
+            setInternalName("1 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("1 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower1s(*this); }
 };
 
 class PeakPower5s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower5s)
     public:
         PeakPower5s()
         {
             setSecs(5);
             setSymbol("5s_critical_power");
+            setInternalName("5 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("5 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower5s(*this); }
 };
 
 class PeakPower10s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower10s)
     public:
         PeakPower10s()
         {
             setSecs(10);
             setSymbol("10s_critical_power");
+            setInternalName("10 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("10 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower10s(*this); }
 };
 
 class PeakPower15s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower15s)
     public:
         PeakPower15s()
         {
             setSecs(15);
             setSymbol("15s_critical_power");
+            setInternalName("15 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("15 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower15s(*this); }
 };
 
 class PeakPower20s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower20s)
     public:
         PeakPower20s()
         {
             setSecs(20);
             setSymbol("20s_critical_power");
+            setInternalName("20 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("20 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower20s(*this); }
 };
 
 class PeakPower30s : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower30s)
     public:
         PeakPower30s()
         {
             setSecs(30);
             setSymbol("30s_critical_power");
+            setInternalName("30 sec Peak Power");
+        }
+        void initialize () {
             setName(tr("30 sec Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower30s(*this); }
 };
 
 class PeakPower1m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower1m)
     public:
         PeakPower1m()
         {
             setSecs(60);
             setSymbol("1m_critical_power");
+            setInternalName("1 min Peak Power");
+        }
+        void initialize () {
             setName(tr("1 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower1m(*this); }
 };
 
+class PeakPower2m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower2m)
+    public:
+        PeakPower2m()
+        {
+            setSecs(120);
+            setSymbol("2m_critical_power");
+            setInternalName("2 min Peak Power");
+        }
+        void initialize () {
+            setName(tr("2 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
+        }
+        RideMetric *clone() const { return new PeakPower2m(*this); }
+};
+
+class PeakPower3m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower3m)
+    public:
+        PeakPower3m()
+        {
+            setSecs(180);
+            setSymbol("3m_critical_power");
+            setInternalName("3 min Peak Power");
+        }
+        void initialize () {
+            setName(tr("3 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
+        }
+        RideMetric *clone() const { return new PeakPower3m(*this); }
+};
+
 class PeakPower5m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower5m)
     public:
         PeakPower5m()
         {
             setSecs(300);
             setSymbol("5m_critical_power");
+            setInternalName("5 min Peak Power");
+        }
+        void initialize () {
             setName(tr("5 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower5m(*this); }
 };
 
+class PeakPower8m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower8m)
+    public:
+        PeakPower8m()
+        {
+            setSecs(8*60);
+            setSymbol("8m_critical_power");
+            setInternalName("8 min Peak Power");
+        }
+        void initialize () {
+            setName(tr("8 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
+        }
+        RideMetric *clone() const { return new PeakPower8m(*this); }
+};
+
 class PeakPower10m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower10m)
     public:
         PeakPower10m()
         {
             setSecs(600);
             setSymbol("10m_critical_power");
+            setInternalName("10 min Peak Power");
+        }
+        void initialize () {
             setName(tr("10 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower10m(*this); }
 };
 
 class PeakPower20m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower20m)
     public:
         PeakPower20m()
         {
             setSecs(1200);
             setSymbol("20m_critical_power");
+            setInternalName("20 min Peak Power");
+        }
+        void initialize () {
             setName(tr("20 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower20m(*this); }
 };
 
 class PeakPower30m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower30m)
     public:
         PeakPower30m()
         {
             setSecs(1800);
             setSymbol("30m_critical_power");
+            setInternalName("30 min Peak Power");
+        }
+        void initialize () {
             setName(tr("30 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
         }
         RideMetric *clone() const { return new PeakPower30m(*this); }
 };
 
+class PeakPower90m : public PeakPower {
+    Q_DECLARE_TR_FUNCTIONS(PeakPower90m)
+    public:
+        PeakPower90m()
+        {
+            setSecs(90*60);
+            setSymbol("90m_critical_power");
+            setInternalName("90 min Peak Power");
+        }
+        void initialize () {
+            setName(tr("90 min Peak Power"));
+            setMetricUnits(tr("watts"));
+            setImperialUnits(tr("watts"));
+        }
+        RideMetric *clone() const { return new PeakPower90m(*this); }
+};
+
+class PeakPowerHr : public RideMetric {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr)
+
+    double hr;
+    double secs;
+
+    public:
+
+    PeakPowerHr() : hr(0.0), secs(0.0)
+    {
+        setType(RideMetric::Peak);
+    }
+    void setSecs(double secs) { this->secs=secs; }
+    void compute(const RideFile *ride, const Zones *, int, const HrZones *, int,
+                 const QHash<QString,RideMetric*> &, const Context *) {
+
+        if (!ride->dataPoints().isEmpty()){
+            QList<BestIntervalDialog::BestInterval> results;
+            BestIntervalDialog::findBests(ride, secs, 1, results);
+            if (results.count() > 0) {
+                double start = results.first().start;
+                double stop = results.first().stop;
+                int points = 0;
+
+                foreach(const RideFilePoint *point, ride->dataPoints()) {
+                    if (point->secs >= start && point->secs < stop) {
+                        points++;
+                        hr = (point->hr + (points-1)*hr) / (points);
+                    }
+                }
+            }
+        } else {
+            hr = 0;
+        }
+
+        setValue(hr);
+    }
+    RideMetric *clone() const { return new PeakPowerHr(*this); }
+};
+
+class PeakPowerHr1m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr1m)
+
+    public:
+        PeakPowerHr1m()
+        {
+            setSecs(60);
+            setSymbol("1m_critical_power_hr");
+            setInternalName("1 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("1 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr1m(*this); }
+};
+
+class PeakPowerHr5m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr5m)
+
+    public:
+        PeakPowerHr5m()
+        {
+            setSecs(300);
+            setSymbol("5m_critical_power_hr");
+            setInternalName("5 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("5 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr5m(*this); }
+};
+
+class PeakPowerHr10m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr10m)
+
+    public:
+        PeakPowerHr10m()
+        {
+            setSecs(600);
+            setSymbol("10m_critical_power_hr");
+            setInternalName("10 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("10 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr10m(*this); }
+};
+
+class PeakPowerHr20m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr20m)
+
+    public:
+        PeakPowerHr20m()
+        {
+            setSecs(1200);
+            setSymbol("20m_critical_power_hr");
+            setInternalName("20 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("20 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr20m(*this); }
+};
+
+class PeakPowerHr30m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr30m)
+
+    public:
+        PeakPowerHr30m()
+        {
+            setSecs(1800);
+            setSymbol("30m_critical_power_hr");
+            setInternalName("30 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("30 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr30m(*this); }
+};
+
+
+class PeakPowerHr60m : public PeakPowerHr {
+    Q_DECLARE_TR_FUNCTIONS(PeakPowerHr60m)
+
+    public:
+        PeakPowerHr60m()
+        {
+            setSecs(3600);
+            setSymbol("60m_critical_power_hr");
+            setInternalName("60 min Peak Power HR");
+        }
+        void initialize () {
+            setName(tr("60 min Peak Power HR"));
+            setMetricUnits(tr("bpm"));
+            setImperialUnits(tr("bpm"));
+        }
+        RideMetric *clone() const { return new PeakPowerHr60m(*this); }
+};
+
 static bool addAllPeaks() {
+    RideMetricFactory::instance().addMetric(FatigueIndex());
+    RideMetricFactory::instance().addMetric(PacingIndex());  
+
     RideMetricFactory::instance().addMetric(PeakPower1s());
     RideMetricFactory::instance().addMetric(PeakPower5s());
     RideMetricFactory::instance().addMetric(PeakPower10s());
@@ -187,11 +576,21 @@ static bool addAllPeaks() {
     RideMetricFactory::instance().addMetric(PeakPower20s());
     RideMetricFactory::instance().addMetric(PeakPower30s());
     RideMetricFactory::instance().addMetric(PeakPower1m());
+    RideMetricFactory::instance().addMetric(PeakPower2m());
+    RideMetricFactory::instance().addMetric(PeakPower3m());
     RideMetricFactory::instance().addMetric(PeakPower5m());
+    RideMetricFactory::instance().addMetric(PeakPower8m());
     RideMetricFactory::instance().addMetric(PeakPower10m());
     RideMetricFactory::instance().addMetric(PeakPower20m());
     RideMetricFactory::instance().addMetric(PeakPower30m());
-    RideMetricFactory::instance().addMetric(CriticalPower());
+    RideMetricFactory::instance().addMetric(PeakPower60m());
+    RideMetricFactory::instance().addMetric(PeakPower90m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr1m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr5m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr10m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr20m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr30m());
+    RideMetricFactory::instance().addMetric(PeakPowerHr60m());
     return true;
 }
 

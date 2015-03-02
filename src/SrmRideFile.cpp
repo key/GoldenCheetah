@@ -27,7 +27,7 @@
 #include <QFile>
 #include <QStringList>
 #include <assert.h>
-#include <math.h>
+#include <cmath>
 #include <stdio.h>
 #ifdef WIN32
     #include <winsock.h>
@@ -48,19 +48,34 @@ static quint16 readShort(QDataStream &in)
 {
     quint16 value;
     in >> value;
-    return htons(value); // SRM uses big endian
+    return value;
+}
+
+static qint16 readSignedShort(QDataStream &in)
+{
+    qint16 value;
+    in >> value;
+    return value;
 }
 
 static quint32 readLong(QDataStream &in)
 {
     quint32 value;
     in >> value;
-    return htonl(value); // SRM uses big endian
+    return value;
+}
+
+static qint32 readSignedLong(QDataStream &in)
+{
+    qint32 value;
+    in >> value;
+    return value;
 }
 
 struct marker
 {
     int start, end;
+    QString note;
 };
 
 struct blockhdr
@@ -73,21 +88,40 @@ static int srmFileReaderRegistered =
     RideFileFactory::instance().registerReader(
         "srm", "SRM training files", new SrmFileReader());
 
-RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) const
+RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings, QList<RideFile*>*) const
 {
     if (!file.open(QFile::ReadOnly)) {
         errorStrings << QString("can't open file %1").arg(file.fileName());
         return NULL;
     }
     QDataStream in(&file);
+    in.setByteOrder( QDataStream::LittleEndian );
+
     RideFile *result = new RideFile;
     result->setDeviceType("SRM");
+    result->setFileFormat("SRM training files (srm)");
+    result->setTag("Sport", "Bike" );
 
     char magic[4];
     in.readRawData(magic, sizeof(magic));
-    assert(strncmp(magic, "SRM", 3) == 0);
+    if( strncmp(magic, "SRM", 3)){
+        errorStrings << QString("Unrecognized file type, missing magic." );
+        return NULL;
+    }
+
     int version = magic[3] - '0';
-    assert(version == 6 || version == 7);
+    switch( version ){
+      case 5:
+      case 6:
+      case 7:
+        // ok
+        break;
+
+      default:
+        errorStrings << QString("Unsupported SRM file format version: %1")
+            .arg(version);
+        return NULL;
+    }
 
     quint16 dayssince1880 = readShort(in);
     quint16 wheelcirc = readShort(in);
@@ -98,12 +132,24 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
     readByte(in); // padding
     quint8 commentlen = readByte(in);
 
+    if( commentlen > 70 )
+        commentlen = 70;
+
     char comment[71];
     in.readRawData(comment, sizeof(comment) - 1);
-    comment[commentlen - 1] = '\0';
+    comment[commentlen] = '\0';
+    result->setTag("Notes", QString(comment) );
+
+    // assert propper markercnt to avoid segfaults
+    if( in.status() != QDataStream::Ok ){
+        errorStrings << QString("failed to read file header" );
+        return NULL;
+    }
 
     result->setRecIntSecs(((double) recint1) / recint2);
     unsigned recintms = (unsigned) round(result->recIntSecs() * 1000.0);
+
+    result->setTag("Wheel Circumference", QString("%1").arg(wheelcirc) );
 
     QDate date(1880, 1, 1);
     date = date.addDays(dayssince1880);
@@ -111,8 +157,10 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
     QVector<marker> markers(markercnt + 1);
     for (int i = 0; i <= markercnt; ++i) {
         char mcomment[256];
-        in.readRawData(mcomment, sizeof(mcomment) - 1);
-        mcomment[sizeof(mcomment) - 1] = '\0';
+        size_t mcommentlen = version < 6 ? 3 : 255;
+        assert( mcommentlen < sizeof(mcomment) );
+        in.readRawData(mcomment, mcommentlen );
+        mcomment[mcommentlen] = '\0';
 
         quint8 active = readByte(in);
         quint16 start = readShort(in);
@@ -123,19 +171,25 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
         quint16 avgspeed = readShort(in);
         quint16 pwc150 = readShort(in);
 
-	// data fixup: Although the data chunk index in srm files starts
-	// with 1, some srmwin wrote files referencing index 0.
-	if( end < 1 ) end = 1;
-	if( start < 1 ) start = 1;
+    // data fixup: Although the data chunk index in srm files starts
+    // with 1, some srmwin wrote files referencing index 0.
+    if( end < 1 ) end = 1;
+    if( start < 1 ) start = 1;
 
-	// data fixup: some srmwin versions wrote markers with start > end
-	if( end < start ){
-		markers[i].start = end;
-		markers[i].end = start;
-	} else {
-		markers[i].start = start;
-		markers[i].end = end;
-	}
+    // data fixup: some srmwin versions wrote markers with start > end
+    if( end < start ){
+        markers[i].start = end;
+        markers[i].end = start;
+    } else {
+        markers[i].start = start;
+        markers[i].end = end;
+    }
+
+        markers[i].note = QString( mcomment);
+
+        if( i == 0 ){
+            result->setTag("Athlete Name", QString(mcomment) );
+        }
 
         (void) active;
         (void) avgwatts;
@@ -146,7 +200,14 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
         (void) wheelcirc;
     }
 
-    blockhdr *blockhdrs = new blockhdr[blockcnt];
+    // fail early to tell devs whats wrong with file
+    if( in.status() != QDataStream::Ok ){
+        errorStrings << QString("failed to read marker" );
+        return NULL;
+    }
+
+    blockhdr *blockhdrs = new blockhdr[blockcnt+1];
+    int blockchunkcnt = 0;
     for (int i = 0; i < blockcnt; ++i) {
         // In the .srm files generated by Rainer Clasen's srmcmd,
         // hsecsincemidn is a *signed* 32-bit integer.  I haven't seen a
@@ -157,6 +218,13 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
         blockhdrs[i].chunkcnt = readShort(in);
         blockhdrs[i].dt = QDateTime(date);
         blockhdrs[i].dt = blockhdrs[i].dt.addMSecs(hsecsincemidn * 10);
+        blockchunkcnt += blockhdrs[i].chunkcnt;
+    }
+
+    // fail early to tell devs whats wrong with file
+    if( in.status() != QDataStream::Ok ){
+        errorStrings << QString("failed to read block headers" );
+        return NULL;
     }
 
     quint16 zero = readShort(in);
@@ -164,10 +232,30 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
     quint16 datacnt = readShort(in);
     readByte(in); // padding
 
-    (void) zero;
-    (void) slope;
+    // fail early to tell devs whats wrong with file
+    if( in.status() != QDataStream::Ok ){
+        errorStrings << QString("failed to read calibration data" );
+        return NULL;
+    }
 
-    assert(blockcnt > 0);
+    result->setTag("Slope", QString("%1")
+        .arg( 140.0 / 42781 * slope, 0, 'f', 2) );
+    result->setTag("Zero Offset", QString("%1").arg(zero) );
+
+    // SRM5 files have no blocks - synthesize one
+    if( blockcnt < 1 ){
+        blockcnt = 0;
+        blockhdrs[0].chunkcnt = datacnt;
+        blockhdrs[0].dt = QDateTime(date);
+    }
+
+    // datacnt might overflow at 64k - so, use sum from blocks, instead
+    if( datacnt > blockchunkcnt ){
+        blockchunkcnt = datacnt;
+        errorStrings << QString("inconsistent chunk count total=%1, blocks=%2")
+            .arg(datacnt)
+            .arg(blockchunkcnt);
+    }
 
     int blknum = 0, blkidx = 0, mrknum = 0, interval = 0;
     double km = 0.0, secs = 0.0;
@@ -175,10 +263,11 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
     if (markercnt > 0)
         mrknum = 1;
 
-    for (int i = 0; i < datacnt; ++i) {
+    for (int i = 0; i < blockchunkcnt; ++i) {
         int cad, hr, watts;
         double kph, alt;
-        if (version == 6) {
+        double temp=-255;
+        if (version < 7) {
             quint8 ps[3];
             in.readRawData((char*) ps, sizeof(ps));
             cad = readByte(in);
@@ -188,15 +277,26 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
             watts = (ps[1] & 0x0f) | (ps[2] << 0x4);
             alt = 0.0;
         }
-        else {
-            assert(version == 7);
+        else if (version == 7 ){
             watts = readShort(in);
             cad = readByte(in);
             hr = readByte(in);
-            kph = readLong(in) * 3.6 / 1000.0;
-            alt = readLong(in);
-            double temp = 0.1 * (qint16) readShort(in);
-            (void) temp; // unused for now
+
+            qint32 kph_tmp = readSignedLong(in);
+            kph = kph_tmp < 0 ? 0 : kph_tmp * 3.6 / 1000.0;
+
+            alt = readSignedLong(in);
+            temp = 0.1 * readSignedShort(in);
+        }
+        else {
+            errorStrings << QString("unsupported SRM file version: %1")
+                .arg( version );
+            return NULL;
+        }
+
+        if( in.status() != QDataStream::Ok ){
+            errorStrings << QString("premature end of file" );
+            break;
         }
 
         if (i == 0) {
@@ -214,7 +314,9 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
         km += result->recIntSecs() * kph / 3600.0;
 
         double nm = watts / 2.0 / PI / cad * 60.0;
-        result->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, 0.0, 0.0, 0.0, interval);
+        result->appendPoint(secs, cad, hr, km, kph, nm, watts, alt, 0.0, 0.0, 0.0, 0.0, temp, 0.0, 
+                            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, interval);
 
         ++blkidx;
         if ((blkidx == blockhdrs[blknum].chunkcnt) && (blknum + 1 < blockcnt)) {
@@ -227,7 +329,7 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
                 ((qint64) end.toTime_t()) * 1000 + end.time().msec();
             qint64 startms =
                 ((qint64) start.toTime_t()) * 1000 + start.time().msec();
-            double diff_secs = (startms - endms) / 1000.0;
+            double diff_secs = (startms - endms + recintms) / 1000.0;
             if (diff_secs < result->recIntSecs()) {
                 errorStrings << QString("ERROR: time goes backwards by %1 s"
                                         " on trans " "to block %2"
@@ -243,15 +345,29 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
         }
     }
 
+    // assert some points were found. prevents segfault when looking at
+    // the overall markers[0].start/.end
+    // note: we're not checking in.status() to cope with truncated files
+
+    if( result->dataPoints().size() < 1 ){
+        errorStrings << QString("file contains no data points");
+        return NULL;
+    }
+
     double last = 0.0;
     for (int i = 1; i < markers.size(); ++i) {
         const marker &marker = markers[i];
-        int start = marker.start - 1;
+        int start = qMin(marker.start, result->dataPoints().size()) - 1;
         double start_secs = result->dataPoints()[start]->secs;
         int end = qMin(marker.end - 1, result->dataPoints().size() - 1);
         double end_secs = result->dataPoints()[end]->secs + result->recIntSecs();
-        result->addInterval(last, start_secs, "");
-        result->addInterval(start_secs, end_secs, QString("%1").arg(i));
+        if( last < start_secs )
+            result->addInterval(last, start_secs, "");
+        QString note = QString("%1").arg(i);
+        if( marker.note.length() )
+            note += QString(" ") + marker.note;
+        if( start_secs <= end_secs )
+            result->addInterval(start_secs, end_secs, note );
         last = end_secs;
     }
     if (!markers.empty() && markers.last().end < result->dataPoints().size()) {
@@ -263,3 +379,4 @@ RideFile *SrmFileReader::openRideFile(QFile &file, QStringList &errorStrings) co
     return result;
 }
 
+// vi:expandtab tabstop=4 shiftwidth=4

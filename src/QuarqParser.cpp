@@ -18,7 +18,6 @@
 
 #include <QString>
 #include <iostream>
-#include <assert.h>
 #include "QuarqParser.h"
 
 QuarqParser::QuarqParser (RideFile* rideFile)
@@ -52,7 +51,7 @@ QuarqParser::incrementTime( const double new_time )
   while (time_diff > seconds_from_start) {
 
     rideFile->appendPoint(seconds_from_start, cad, hr, km,
-			  kph, nm, watts, 0, 0.0, 0.0, 0.0, 0);
+                          kph, nm, watts, 0, 0.0, 0.0, 0.0, 0.0, RideFile::NoTemp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0);
 
     seconds_from_start += SAMPLE_INTERVAL;
   }
@@ -73,7 +72,7 @@ QuarqParser::startElement( const QString&, const QString&,
       seconds_from_start = 0.0;
       initial_seconds = -1;
 
-      return TRUE;
+      return true;
     }
 
 #define CheckQuarqXml(name,unit,dest)  do { 				\
@@ -86,7 +85,7 @@ QuarqParser::startElement( const QString&, const QString&,
 	  dest = name.toDouble();					\
 	  incrementTime(timestamp.toDouble());				\
 	}								\
-	return TRUE;							\
+	return true;							\
       }									\
     } while (0);
 
@@ -104,7 +103,7 @@ QuarqParser::startElement( const QString&, const QString&,
     // only print the first time and unknown happens
     if (!unknown_keys[qName]++)
       std::cerr << "Unknown Element " << qPrintable(qName) << std::endl;
-    return TRUE;
+    return true;
 }
 
 bool
@@ -114,15 +113,19 @@ QuarqParser::endElement( const QString&, const QString&, const QString& qName)
     // flush one last data point
     if (qName == "Qollector") {
       rideFile->appendPoint(seconds_from_start, cad, hr, km,
-			    kph, nm, watts, 0, 0.0, 0.0, 0.0, 0);
+                            kph, nm, watts, 0, 0.0, 0.0, 0.0, 0.0, RideFile::NoTemp, 
+                            0.0,0.0,0.0,0.0,
+                            0.0,0.0,
+                            0.0,0.0,0.0,0.0,
+                            0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0, 0);
     }
 
-    return TRUE;
+    return true;
 }
 
 bool
 QuarqParser::characters( const QString& str )
 {
     buf += str;
-    return TRUE;
+    return true;
 }

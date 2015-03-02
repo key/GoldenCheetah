@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2009 Sean C. Rhea (srhea@srhea.net)
+ * Copyright (c) 2014 Mark Liversedge (liversedge@gmail.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -17,121 +18,356 @@
  */
 
 
-#include "MainWindow.h"
+#include "Context.h"
+#include "Context.h"
+#include "Athlete.h"
+#include "TabView.h"
+#include "AllPlotInterval.h"
 #include "AllPlotWindow.h"
 #include "AllPlot.h"
-#include "MainWindow.h"
 #include "RideFile.h"
 #include "RideItem.h"
 #include "IntervalItem.h"
+#include "IntervalTreeView.h"
 #include "TimeUtils.h"
 #include "Settings.h"
 #include "Units.h" // for MILES_PER_KM
 #include "Colors.h" // for MILES_PER_KM
 #include <qwt_plot_layout.h>
+#include <qwt_plot_canvas.h>
 #include <qwt_plot_panner.h>
 #include <qwt_plot_zoomer.h>
 #include <qwt_plot_picker.h>
 #include <qwt_plot_marker.h>
+#include <qwt_scale_widget.h>
 #include <qwt_arrow_button.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_grid.h>
 #include <qwt_text.h>
 #include <qwt_legend.h>
-#include <qwt_data.h>
+#include <qwt_series_data.h>
 
 // span slider specials
 #include <qxtspanslider.h>
-#include <QCleanlooksStyle>
+#include <QStyleFactory>
+#include <QStyle>
+#include <QScrollBar>
 
 // tooltip
 #include "LTMWindow.h"
 
-AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
-    QWidget(mainWindow), current(NULL), mainWindow(mainWindow), active(false), stale(true)
+// help
+#include "HelpWhatsThis.h"
+
+// overlay helper
+#include "GcOverlayWidget.h"
+#include "IntervalSummaryWindow.h"
+
+static const int stackZoomWidth[8] = { 5, 10, 15, 20, 30, 45, 60, 120 };
+
+AllPlotWindow::AllPlotWindow(Context *context) :
+    GcChartWindow(context), current(NULL), context(context), active(false), stale(true), setupStack(false), setupSeriesStack(false), compareStale(true), firstShow(true)
 {
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-    QVBoxLayout *vlayout = new QVBoxLayout;
+    // basic setup
+    setContentsMargins(0,0,0,0);
+    QWidget *c = new QWidget;
+    HelpWhatsThis *helpConfig = new HelpWhatsThis(c);
+    c->setWhatsThis(helpConfig->getWhatsThisText(HelpWhatsThis::ChartRides_Performance));
+    setControls(c);
+    QVBoxLayout *clv = new QVBoxLayout(c);
 
-    QHBoxLayout *showLayout = new QHBoxLayout;
-    QLabel *showLabel = new QLabel(tr("Show:"), this);
-    showLayout->addWidget(showLabel);
+    // all the controls
+    QFormLayout *mainControls = new QFormLayout; // basic stuff at top; power, slider etc
 
-    showStack = new QCheckBox(tr("Stacked view"), this);
+    // aside from basic settings, other stuff is now
+    // in a tab widget as we have so many data series !
+    QTabWidget *st = new QTabWidget(this);
+    clv->addWidget(st);
 
-    if (settings->value(GC_RIDE_PLOT_STACK).toInt())
-        showStack->setCheckState(Qt::Checked);
-    else
-        showStack->setCheckState(Qt::Unchecked);
-    showLayout->addWidget(showStack);
+    // gui controls
+    QWidget *basic = new QWidget(this); // show stack etc
+    QVBoxLayout *basicControls = new QVBoxLayout(basic);
+    basicControls->addLayout(mainControls);
+    QFormLayout *guiControls = new QFormLayout; // show stack etc BUT ALSO ACCEL etc
+    basicControls->addLayout(guiControls);
+    basicControls->addStretch();
+    st->addTab(basic, tr("Basic"));
 
-    stackWidth = 15;
+    HelpWhatsThis *basicHelp = new HelpWhatsThis(basic);
+    basic->setWhatsThis(basicHelp->getWhatsThisText(HelpWhatsThis::ChartRides_Performance_Config_Basic));
 
-    QLabel *labelspacer = new QLabel(this);
-    labelspacer->setFixedWidth(5);
-    showLayout->addWidget(labelspacer);
+    // data series
+    QWidget *series = new QWidget(this); // data series selection
+    QHBoxLayout *seriesControls = new QHBoxLayout(series);
+    QFormLayout *seriesLeft = new QFormLayout(); // ride side series
+    QFormLayout *seriesRight = new QFormLayout(); // ride side series
+    seriesControls->setSpacing(2);
+    seriesLeft->setSpacing(2);
+    seriesRight->setSpacing(2);
+    seriesControls->addLayout(seriesLeft);
+    seriesControls->addLayout(seriesRight); // ack I swapped them around !
+    st->addTab(series, tr("Curves"));
 
-    stackZoomUp = new QwtArrowButton(1, Qt::UpArrow,this);
-    stackZoomUp->setFixedHeight(15);
-    stackZoomUp->setFixedWidth(15);
-    stackZoomUp->setEnabled(false);
-    stackZoomUp->setContentsMargins(0,0,0,0);
-    stackZoomUp->setFlat(true);
-    showLayout->addWidget(stackZoomUp);
+    HelpWhatsThis *seriesHelp = new HelpWhatsThis(series);
+    series->setWhatsThis(seriesHelp->getWhatsThisText(HelpWhatsThis::ChartRides_Performance_Config_Series));
 
-    stackZoomDown = new QwtArrowButton(1, Qt::DownArrow,this);
-    stackZoomDown->setFixedHeight(15);
-    stackZoomDown->setFixedWidth(15);
-    stackZoomDown->setEnabled(false);
-    stackZoomDown->setContentsMargins(0,0,0,0);
-    stackZoomDown->setFlat(true);
-    showLayout->addWidget(stackZoomDown);
+    // Main layout
+    //QGridLayout *mainLayout = new QGridLayout();
+    //mainLayout->setContentsMargins(2,2,2,2);
 
-    QCheckBox *showGrid = new QCheckBox(tr("Grid"), this);
+    //
+    // reveal controls widget
+    //
+
+    // reveal controls
+    rSmooth = new QLabel(tr("Smooth"));
+    rSmoothEdit = new QLineEdit();
+    rSmoothEdit->setFixedWidth(30);
+    rSmoothSlider = new QSlider(Qt::Horizontal);
+    rSmoothSlider->setTickPosition(QSlider::TicksBelow);
+    rSmoothSlider->setTickInterval(10);
+    rSmoothSlider->setMinimum(1);
+    rSmoothSlider->setMaximum(100);
+    rStack = new QCheckBox(tr("Stacked"));
+    rBySeries = new QCheckBox(tr("by series"));
+    rFull = new QCheckBox(tr("Fullplot"));
+    rHelp = new QCheckBox(tr("Overlay"));
+
+    // layout reveal controls
+    QHBoxLayout *r = new QHBoxLayout;
+    r->setContentsMargins(0,0,0,0);
+    r->addStretch();
+    r->addWidget(rSmooth);
+    r->addWidget(rSmoothEdit);
+    r->addWidget(rSmoothSlider);
+    QVBoxLayout *v = new QVBoxLayout;
+    QHBoxLayout *s = new QHBoxLayout;
+    QHBoxLayout *t = new QHBoxLayout;
+    s->addWidget(rStack);
+    s->addWidget(rBySeries);
+    v->addLayout(s);
+    t->addWidget(rFull);
+    t->addWidget(rHelp);
+    v->addLayout(t);
+    r->addSpacing(20);
+    r->addLayout(v);
+    r->addStretch();
+    setRevealLayout(r);
+    //revealControls->setLayout(r);
+    
+    // hide them initially
+    //revealControls->hide();
+
+    // setup the controls
+    QLabel *showLabel = new QLabel(tr("View"), c);
+
+    showStack = new QCheckBox(tr("Stack"), this);
+    showStack->setCheckState(Qt::Unchecked);
+    guiControls->addRow(showLabel, showStack);
+
+    showBySeries = new QCheckBox(tr("By Series"), this);
+    showBySeries->setCheckState(Qt::Unchecked);
+    guiControls->addRow(new QLabel("", this), showBySeries);
+    guiControls->addRow(new QLabel("", this), new QLabel("",this)); // spacer
+
+    stackWidth = 20;
+    stackZoomSlider = new QSlider(Qt::Horizontal,this);
+    stackZoomSlider->setMinimum(0);
+    stackZoomSlider->setMaximum(7);
+    stackZoomSlider->setTickInterval(1);
+    stackZoomSlider->setValue(3);
+    guiControls->addRow(new QLabel(tr("Stack Zoom")), stackZoomSlider);
+
+    showFull = new QCheckBox(tr("Full plot"), this);
+    showFull->setCheckState(Qt::Checked);
+    guiControls->addRow(new QLabel(""), showFull);
+
+    showInterval = new QCheckBox(tr("Interval Navigator"), this);
+    showInterval->setCheckState(Qt::Checked);
+    guiControls->addRow(new QLabel(""), showInterval);
+
+    showHover = new QCheckBox(tr("Hover intervals"), this);
+    showHover->setCheckState(Qt::Checked);
+    guiControls->addRow(new QLabel(""), showHover);
+
+    showHelp = new QCheckBox(tr("Overlay"), this);
+    showHelp->setCheckState(Qt::Unchecked);
+    guiControls->addRow(new QLabel(""), showHelp);
+
+    paintBrush = new QCheckBox(tr("Fill Curves"), this);
+    paintBrush->setCheckState(Qt::Unchecked);
+    guiControls->addRow(new QLabel(""), paintBrush);
+
+    showGrid = new QCheckBox(tr("Grid"), this);
     showGrid->setCheckState(Qt::Checked);
-    showLayout->addWidget(showGrid);
+    guiControls->addRow(new QLabel(""), showGrid);
+    guiControls->addRow(new QLabel(""), new QLabel(""));
 
+    showAccel = new QCheckBox(tr("Acceleration"), this);
+    showAccel->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(tr("Delta Series")), showAccel);
+    showPowerD = new QCheckBox(QString(tr("Power %1").arg(deltaChar)), this);
+    showPowerD->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showPowerD);
+    showCadD = new QCheckBox(QString(tr("Cadence %1").arg(deltaChar)), this);
+    showCadD->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showCadD);
+    showTorqueD = new QCheckBox(QString(tr("Torque %1").arg(deltaChar)), this);
+    showTorqueD->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showTorqueD);
+    showHrD = new QCheckBox(QString(tr("Heartrate %1").arg(deltaChar)), this);
+    showHrD->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showHrD);
+
+    seriesRight->addRow(new QLabel(""), new QLabel(""));
+
+    showBalance = new QCheckBox(tr("Balance"), this);
+    showBalance->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(tr("Left/Right")), showBalance);
+
+    showTE = new QCheckBox(tr("Torque Effectiveness"));
+    showTE->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showTE);
+
+    showPS = new QCheckBox(tr("Smoothness"), this);
+    showPS->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showPS);
+
+    showPCO = new QCheckBox(tr("Pedal Center Offset"), this);
+    showPCO->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showPCO);
+
+    showDC = new QCheckBox(tr("Power Phase"), this);
+    showDC->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showDC);
+
+    showPPP = new QCheckBox(tr("Peak Power Phase"), this);
+    showPPP->setCheckState(Qt::Unchecked);
+    seriesRight->addRow(new QLabel(""), showPPP);
+
+    // running !
+    seriesRight->addRow(new QLabel(""), new QLabel(""));
+
+    showRV = new QCheckBox(tr("Vertical Oscillation"), this);
+    showRV->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(tr("Running")), showRV);
+
+    showRGCT = new QCheckBox(tr("Ground Contact Time"), this);
+    showRGCT->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(""), showRGCT);
+
+    showRCad = new QCheckBox(tr("Cadence"), this);
+    showRCad->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(""), showRCad);
+
+    seriesRight->addRow(new QLabel(""), new QLabel(""));
+
+    showSmO2 = new QCheckBox(tr("SmO2"), this);
+    showSmO2->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(tr("Moxy")), showSmO2);
+
+    showtHb = new QCheckBox(tr("tHb"), this);
+    showtHb->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(""), showtHb);
+
+    showO2Hb = new QCheckBox(tr("O2Hb"), this);
+    showO2Hb->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(""), showO2Hb);
+
+    showHHb = new QCheckBox(tr("HHb"), this);
+    showHHb->setCheckState(Qt::Checked);
+    seriesRight->addRow(new QLabel(""), showHHb);
+
+    // "standard"
     showHr = new QCheckBox(tr("Heart Rate"), this);
     showHr->setCheckState(Qt::Checked);
-    showLayout->addWidget(showHr);
+    seriesLeft->addRow(new QLabel(tr("Data series")), showHr);
 
     showSpeed = new QCheckBox(tr("Speed"), this);
     showSpeed->setCheckState(Qt::Checked);
-    showLayout->addWidget(showSpeed);
+    seriesLeft->addRow(new QLabel(""), showSpeed);
 
     showCad = new QCheckBox(tr("Cadence"), this);
     showCad->setCheckState(Qt::Checked);
-    showLayout->addWidget(showCad);
+    seriesLeft->addRow(new QLabel(""), showCad);
 
     showAlt = new QCheckBox(tr("Altitude"), this);
     showAlt->setCheckState(Qt::Checked);
-    showLayout->addWidget(showAlt);
+    seriesLeft->addRow(new QLabel(""), showAlt);
 
-    showPower = new QComboBox();
+    showTemp = new QCheckBox(tr("Temperature"), this);
+    showTemp->setCheckState(Qt::Checked);
+    seriesLeft->addRow(new QLabel(""), showTemp);
+
+    showWind = new QCheckBox(tr("Headwind"), this);
+    showWind->setCheckState(Qt::Checked);
+    seriesLeft->addRow(new QLabel(""), showWind);
+
+    showTorque = new QCheckBox(tr("Torque"), this);
+    showTorque->setCheckState(Qt::Checked);
+    seriesLeft->addRow(new QLabel(""), showTorque);
+
+    showGear = new QCheckBox(tr("Gear Ratio"), this);
+    showGear->setCheckState(Qt::Checked);
+    seriesLeft->addRow(new QLabel(""), showGear);
+
+    showSlope = new QCheckBox(tr("Slope"), this);
+    showSlope->setCheckState(Qt::Checked);
+    seriesLeft->addRow(new QLabel(""), showSlope);
+
+    seriesLeft->addRow(new QLabel(""), new QLabel(""));
+
+    showAltSlope = new QComboBox(this);
+    showAltSlope->addItem(tr("No Alt/Slope"));
+    showAltSlope->addItem(tr("0.1km|mi -  1min"));
+    showAltSlope->addItem(tr("0.5km|mi -  5min"));
+    showAltSlope->addItem(tr("1.0km|mi - 10min"));
+    seriesLeft->addRow(new QLabel(tr("Alt/Slope")), showAltSlope);
+    showAltSlope->setCurrentIndex(0);
+
+    seriesLeft->addRow(new QLabel(""), new QLabel(""));
+
+    showANTISS = new QCheckBox(tr("Anaerobic TISS"), this);
+    showANTISS->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(tr("Metrics")), showANTISS);
+
+    showATISS = new QCheckBox(tr("Aerobic TISS"), this);
+    showATISS->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(""), showATISS);
+
+    showNP = new QCheckBox(tr("Normalized Power"), this);
+    showNP->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(""), showNP);
+
+    showXP = new QCheckBox(tr("Skiba xPower"), this);
+    showXP->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(""), showXP);
+
+    showAP = new QCheckBox(tr("Altitude Power"), this);
+    showAP->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(""), showAP);
+
+    showW = new QCheckBox(tr("W' balance"), this);
+    showW->setCheckState(Qt::Unchecked);
+    seriesLeft->addRow(new QLabel(""), showW);
+
+    showPower = new QComboBox(this);
     showPower->addItem(tr("Power + shade"));
     showPower->addItem(tr("Power - shade"));
     showPower->addItem(tr("No Power"));
-    showLayout->addWidget(showPower);
+    mainControls->addRow(new QLabel(tr("Shading")), showPower);
+    showPower->setCurrentIndex(0);
 
-    // shade zones defaults will come in with a
-    // future patch. For now we have place holder
-    // to update when new config arrives
-    if (true) showPower->setCurrentIndex(0);
-    else showPower->setCurrentIndex(1);
+    comboDistance = new QComboBox(this);
+    comboDistance->addItem(tr("Time"));
+    comboDistance->addItem(tr("Distance"));
+    mainControls->addRow(new QLabel(tr("X Axis")), comboDistance);
 
-    QHBoxLayout *smoothLayout = new QHBoxLayout;
-    QComboBox *comboDistance = new QComboBox();
-    comboDistance->addItem(tr("X Axis Shows Time"));
-    comboDistance->addItem(tr("X Axis Shows Distance"));
-    smoothLayout->addWidget(comboDistance);
-
-    QLabel *smoothLabel = new QLabel(tr("Smoothing (secs)"), this);
+    QLabel *smoothLabel = new QLabel(tr("Smooth"), this);
     smoothLineEdit = new QLineEdit(this);
     smoothLineEdit->setFixedWidth(40);
 
-    smoothLayout->addWidget(smoothLabel);
-    smoothLayout->addWidget(smoothLineEdit);
-    smoothSlider = new QSlider(Qt::Horizontal);
+    smoothSlider = new QSlider(Qt::Horizontal, this);
     smoothSlider->setTickPosition(QSlider::TicksBelow);
     smoothSlider->setTickInterval(10);
     smoothSlider->setMinimum(1);
@@ -139,17 +375,37 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     smoothLineEdit->setValidator(new QIntValidator(smoothSlider->minimum(),
                                                    smoothSlider->maximum(),
                                                    smoothLineEdit));
+    QHBoxLayout *smoothLayout = new QHBoxLayout;
+    smoothLayout->addWidget(smoothLineEdit);
     smoothLayout->addWidget(smoothSlider);
+    mainControls->addRow(smoothLabel, smoothLayout);
 
-    allPlot = new AllPlot(this, mainWindow);
+    QPalette palette;
+    palette.setBrush(QPalette::Background, QBrush(GColor(CRIDEPLOTBACKGROUND)));
+
+    allPlot = new AllPlot(this, this, context);
+    allPlot->setContentsMargins(0,0,0,0);
+    allPlot->enableAxis(QwtPlot::xBottom, true);
+    allPlot->setAxisVisible(QwtPlot::xBottom, true);
+    //allPlot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    //allPlot->axisWidget(QwtPlot::yLeft)->installEventFilter(this);
+
+    allStack = new QStackedWidget(this);
+    allStack->addWidget(allPlot);
+    allStack->setCurrentIndex(0);
+
+    HelpWhatsThis *help = new HelpWhatsThis(allPlot);
+    allPlot->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::ChartRides_Performance));
+
+    // sort out default values
     smoothSlider->setValue(allPlot->smooth);
     smoothLineEdit->setText(QString("%1").arg(allPlot->smooth));
+    rSmoothSlider->setValue(allPlot->smooth);
+    rSmoothEdit->setText(QString("%1").arg(allPlot->smooth));
 
     allZoomer = new QwtPlotZoomer(allPlot->canvas());
     allZoomer->setRubberBand(QwtPicker::RectRubberBand);
     allZoomer->setRubberBandPen(GColor(CPLOTSELECT));
-    allZoomer->setSelectionFlags(QwtPicker::DragSelection
-                                 | QwtPicker::CornerToCorner);
     allZoomer->setTrackerMode(QwtPicker::AlwaysOff);
     allZoomer->setEnabled(true);
 
@@ -158,6 +414,8 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
 
     // RightButton: zoom out by 1
     // Ctrl+RightButton: zoom out to full size
+    allZoomer->setMousePattern(QwtEventPattern::MouseSelect1,
+                               Qt::LeftButton, Qt::ShiftModifier);
     allZoomer->setMousePattern(QwtEventPattern::MouseSelect2,
                                Qt::RightButton, Qt::ControlModifier);
     allZoomer->setMousePattern(QwtEventPattern::MouseSelect3,
@@ -169,15 +427,13 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     // TODO: zoomer doesn't interact well with automatic axis resizing
 
     // tooltip on hover over point
-    allPlot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtPlot::yLeft,
-                               QwtPicker::PointSelection,
+    allPlot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtAxisId(QwtAxis::yLeft, 2).id,
                                QwtPicker::VLineRubberBand,
                                QwtPicker::AlwaysOn,
                                allPlot->canvas(),
                                "");
-    allPlot->tooltip->setSelectionFlags(QwtPicker::PointSelection | QwtPicker::RectSelection | QwtPicker::DragSelection);
     allPlot->tooltip->setRubberBand(QwtPicker::VLineRubberBand);
-    allPlot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton, Qt::ShiftModifier);
+    allPlot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton);
     allPlot->tooltip->setTrackerPen(QColor(Qt::black));
     QColor inv(Qt::white);
     inv.setAlpha(0);
@@ -185,6 +441,8 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     allPlot->tooltip->setEnabled(true);
 
     allPlot->_canvasPicker = new LTMCanvasPicker(allPlot);
+
+    connect(context, SIGNAL(intervalHover(RideFileInterval)), allPlot, SLOT(intervalHover(RideFileInterval)));
     connect(allPlot->_canvasPicker, SIGNAL(pointHover(QwtPlotCurve*, int)), allPlot, SLOT(pointHover(QwtPlotCurve*, int)));
     connect(allPlot->tooltip, SIGNAL(moved(const QPoint &)), this, SLOT(plotPickerMoved(const QPoint &)));
     connect(allPlot->tooltip, SIGNAL(appended(const QPoint &)), this, SLOT(plotPickerSelected(const QPoint &)));
@@ -193,32 +451,106 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     allMarker1->setLineStyle(QwtPlotMarker::VLine);
     allMarker1->attach(allPlot);
     allMarker1->setLabelAlignment(Qt::AlignTop|Qt::AlignRight);
-    allPlot->allMarker1=allMarker1;
+    allPlot->standard->allMarker1=allMarker1;
 
     QwtPlotMarker* allMarker2 = new QwtPlotMarker();
     allMarker2->setLineStyle(QwtPlotMarker::VLine);
     allMarker2->attach(allPlot);
     allMarker2->setLabelAlignment(Qt::AlignTop|Qt::AlignRight);
-    allPlot->allMarker2=allMarker2;
+    allPlot->standard->allMarker2=allMarker2;
 
     //
     // stack view
     //
-    stackFrame = new QScrollArea();
-    stackFrame->hide();
     stackPlotLayout = new QVBoxLayout();
-    stackWidget = new QWidget();
+    stackPlotLayout->setSpacing(0);
+    stackPlotLayout->setContentsMargins(0,0,0,0);
+
+    stackWidget = new QWidget(this);
+    stackWidget->setAutoFillBackground(false);
     stackWidget->setLayout(stackPlotLayout);
+    stackWidget->setPalette(palette);
+
+    stackFrame = new QScrollArea(this);
+#ifdef Q_OS_WIN
+    QStyle *cde = QStyleFactory::create(OS_STYLE);
+    stackFrame->setStyle(cde);
+#endif
+    stackFrame->hide();
+    stackFrame->setAutoFillBackground(false);
     stackFrame->setWidgetResizable(true);
     stackFrame->setWidget(stackWidget);
+    stackFrame->setFrameStyle(QFrame::NoFrame);
+    stackFrame->setContentsMargins(0,0,0,0);
+    stackFrame->setPalette(palette);
+
+    //
+    // series stack view
+    //
+    seriesstackPlotLayout = new QVBoxLayout();
+    seriesstackPlotLayout->setSpacing(0);
+    seriesstackPlotLayout->setContentsMargins(0,0,0,0);
+    seriesstackWidget = new QWidget(this);
+    seriesstackWidget->setAutoFillBackground(true);
+    seriesstackWidget->setLayout(seriesstackPlotLayout);
+    seriesstackWidget->setPalette(palette);
+
+    seriesstackFrame = new QScrollArea(this);
+#ifdef Q_OS_WIN
+    cde = QStyleFactory::create(OS_STYLE);
+    seriesstackFrame->setStyle(cde);
+#endif
+    seriesstackFrame->hide();
+    seriesstackFrame->setAutoFillBackground(false);
+    seriesstackFrame->setWidgetResizable(true);
+    seriesstackFrame->setWidget(seriesstackWidget);
+    seriesstackFrame->setFrameStyle(QFrame::NoFrame);
+    seriesstackFrame->setContentsMargins(0,0,0,0);
+    seriesstackFrame->setPalette(palette);
+
+    //
+    // Compare - AllPlots stack
+    //
+    comparePlotLayout = new QVBoxLayout();
+    comparePlotLayout->setSpacing(0);
+    comparePlotLayout->setContentsMargins(0,0,0,0);
+    comparePlotWidget = new QWidget(this);
+    comparePlotWidget->setAutoFillBackground(false);
+    comparePlotWidget->setLayout(comparePlotLayout);
+    comparePlotWidget->setPalette(palette);
+
+    comparePlotFrame = new QScrollArea(this);
+#ifdef Q_OS_WIN
+    cde = QStyleFactory::create(OS_STYLE);
+    comparePlotWidget->setStyle(cde);
+#endif
+    comparePlotFrame->hide();
+    comparePlotFrame->setAutoFillBackground(false);
+    comparePlotFrame->setWidgetResizable(true);
+    comparePlotFrame->setWidget(comparePlotWidget);
+    comparePlotFrame->setFrameStyle(QFrame::NoFrame);
+    comparePlotFrame->setContentsMargins(0,0,0,0);
+    comparePlotFrame->setPalette(palette);
+
+    allStack->addWidget(comparePlotFrame);
 
     //
     // allPlot view
     //
-    QVBoxLayout *allPlotLayout = new QVBoxLayout;
-    allPlotFrame = new QScrollArea();
+    allPlotLayout = new QVBoxLayout;
+    allPlotLayout->setSpacing(0);
+    allPlotLayout->setContentsMargins(0,0,0,0);
+    allPlotFrame = new QScrollArea(this);
+#ifdef Q_OS_WIN
+    cde = QStyleFactory::create(OS_STYLE);
+    allPlotFrame->setStyle(cde);
+#endif
+    allPlotFrame->setFrameStyle(QFrame::NoFrame);
+    allPlotFrame->setAutoFillBackground(false);
+    allPlotFrame->setContentsMargins(0,0,0,0);
 
-    spanSlider = new QxtSpanSlider(Qt::Horizontal);
+    spanSlider = new QxtSpanSlider(Qt::Horizontal, this);
+    spanSlider->setFocusPolicy(Qt::NoFocus);
     spanSlider->setHandleMovementMode(QxtSpanSlider::NoOverlapping);
     spanSlider->setLowerValue(0);
     spanSlider->setUpperValue(15);
@@ -226,14 +558,14 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     QFont small;
     small.setPointSize(6);
 
-    scrollLeft = new QPushButton("<");
+    scrollLeft = new QPushButton("<", this);
     scrollLeft->setFont(small);
     scrollLeft->setAutoRepeat(true);
     scrollLeft->setFixedHeight(16);
     scrollLeft->setFixedWidth(16);
     scrollLeft->setContentsMargins(0,0,0,0);
 
-    scrollRight = new QPushButton(">");
+    scrollRight = new QPushButton(">", this);
     scrollRight->setFont(small);
     scrollRight->setAutoRepeat(true);
     scrollRight->setFixedHeight(16);
@@ -244,30 +576,68 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
     // BUG in QMacStyle and painting of spanSlider
     // so we use a plain style to avoid it, but only
     // on a MAC, since win and linux are fine
-    QCleanlooksStyle *style = new QCleanlooksStyle();
+#if QT_VERSION > 0x5000
+    QStyle *style = QStyleFactory::create("fusion");
+#else
+    QStyle *style = QStyleFactory::create("Cleanlooks");
+#endif
     spanSlider->setStyle(style);
     scrollLeft->setStyle(style);
     scrollRight->setStyle(style);
 #endif
 
-    fullPlot = new AllPlot(this, mainWindow);
-    fullPlot->grid->enableY(false);
-    fullPlot->setCanvasBackground(GColor(CPLOTTHUMBNAIL));
-    fullPlot->setCanvasLineWidth(0);
-    fullPlot->enableAxis(QwtPlot::yLeft, false);
-    fullPlot->enableAxis(QwtPlot::yLeft2, false);
-    fullPlot->enableAxis(QwtPlot::yRight, false);
-    fullPlot->enableAxis(QwtPlot::yRight2, false);
-    fullPlot->enableAxis(QwtPlot::xBottom, false);
-    fullPlot->legend()->clear();
-    //fullPlot->setTitle("");
+    fullPlot = new AllPlot(this, this, context);
+    fullPlot->standard->grid->enableY(false);
+    fullPlot->setFixedHeight(100);
+    fullPlot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+    fullPlot->setHighlightIntervals(false);
+    fullPlot->setPaintBrush(0);
+    static_cast<QwtPlotCanvas*>(fullPlot->canvas())->setBorderRadius(0);
+    fullPlot->setWantAxis(false);
     fullPlot->setContentsMargins(0,0,0,0);
 
-    allPlotLayout->addWidget(allPlot);
+    HelpWhatsThis *helpFull = new HelpWhatsThis(fullPlot);
+    fullPlot->setWhatsThis(helpFull->getWhatsThisText(HelpWhatsThis::ChartRides_Performance));
+
+    intervalPlot = new AllPlotInterval(this, context);
+    intervalPlot->setFixedHeight(100);
+    intervalPlot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+    static_cast<QwtPlotCanvas*>(intervalPlot->canvas())->setBorderRadius(0);
+    intervalPlot->setContentsMargins(0,0,0,0);
+
+    // tooltip on hover over point
+    /*intervalPlot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtAxis::yLeft,
+                               QwtPicker::VLineRubberBand,
+                               QwtPicker::AlwaysOn,
+                               intervalPlot->canvas(),
+                               "");
+    intervalPlot->tooltip->setRubberBand(QwtPicker::VLineRubberBand);
+    intervalPlot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton);
+    intervalPlot->tooltip->setTrackerPen(QColor(Qt::black));
+    intervalPlot->tooltip->setRubberBandPen(inv);
+    intervalPlot->tooltip->setEnabled(true);*/
+
+
+    // allPlotStack contains the allPlot and the stack by series
+    // because both want the optional fullplot at the bottom
+    allPlotStack = new QStackedWidget(this);
+    allPlotStack->addWidget(allStack);
+    allPlotStack->addWidget(seriesstackFrame);
+    allPlotStack->setCurrentIndex(0);
+
+    HelpWhatsThis *helpStack = new HelpWhatsThis(allPlotStack);
+    allPlotStack->setWhatsThis(helpStack->getWhatsThisText(HelpWhatsThis::ChartRides_Performance));
+
+    allPlotLayout->addWidget(allPlotStack);
     allPlotFrame->setLayout(allPlotLayout);
+
+    allPlotLayout->addWidget(intervalPlot);
+
 
     // controls...
     controlsLayout = new QGridLayout;
+    controlsLayout->setSpacing(0);
+    controlsLayout->setContentsMargins(5,5,5,5);
     controlsLayout->addWidget(fullPlot, 0,1);
     controlsLayout->addWidget(spanSlider, 1,1);
     controlsLayout->addWidget(scrollLeft,1,0);
@@ -281,61 +651,198 @@ AllPlotWindow::AllPlotWindow(MainWindow *mainWindow) :
 #else
     controlsLayout->setSpacing(0);
 #endif
+    allPlotLayout->addLayout(controlsLayout);
+    allPlotLayout->setStretch(0,100);
+    allPlotLayout->setStretch(1,20);
 
+    QVBoxLayout *vlayout = new QVBoxLayout;
+    vlayout->setContentsMargins(2,0,2,2);
+    vlayout->setSpacing(0);
     vlayout->addWidget(allPlotFrame);
     vlayout->addWidget(stackFrame);
-    vlayout->addLayout(controlsLayout);
-    vlayout->addLayout(showLayout);
-    vlayout->addLayout(smoothLayout);
-    vlayout->setStretch(0,100);
-    vlayout->setStretch(1,100);
-    vlayout->setStretch(2,15);
-    vlayout->setStretch(3,1);
-    vlayout->setStretch(4,1);
     vlayout->setSpacing(1);
-    setLayout(vlayout);
+
+    // put a helper on the screen for mouse over intervals...
+    overlayIntervals = new IntervalSummaryWindow(context);
+    addHelper(tr("Intervals"), overlayIntervals);
+
+    //mainLayout->addLayout(vlayout,0,0);
+    //mainLayout->addWidget(revealBackground,0,0, Qt::AlignTop);
+    //mainLayout->addWidget(revealControls,0,0, Qt::AlignTop);
+    //revealBackground->raise();
+    //revealControls->raise();
+    setChartLayout(vlayout);
 
     // common controls
     connect(showPower, SIGNAL(currentIndexChanged(int)), this, SLOT(setShowPower(int)));
-    connect(showHr, SIGNAL(stateChanged(int)), this, SLOT(setShowHr(int)));
-    connect(showSpeed, SIGNAL(stateChanged(int)), this, SLOT(setShowSpeed(int)));
     connect(showCad, SIGNAL(stateChanged(int)), this, SLOT(setShowCad(int)));
+    connect(showTorque, SIGNAL(stateChanged(int)), this, SLOT(setShowTorque(int)));
+    connect(showHr, SIGNAL(stateChanged(int)), this, SLOT(setShowHr(int)));
+    connect(showPowerD, SIGNAL(stateChanged(int)), this, SLOT(setShowPowerD(int)));
+    connect(showCadD, SIGNAL(stateChanged(int)), this, SLOT(setShowCadD(int)));
+    connect(showTorqueD, SIGNAL(stateChanged(int)), this, SLOT(setShowTorqueD(int)));
+    connect(showHrD, SIGNAL(stateChanged(int)), this, SLOT(setShowHrD(int)));
+    connect(showNP, SIGNAL(stateChanged(int)), this, SLOT(setShowNP(int)));
+    connect(showRV, SIGNAL(stateChanged(int)), this, SLOT(setShowRV(int)));
+    connect(showRCad, SIGNAL(stateChanged(int)), this, SLOT(setShowRCad(int)));
+    connect(showRGCT, SIGNAL(stateChanged(int)), this, SLOT(setShowRGCT(int)));
+    connect(showGear, SIGNAL(stateChanged(int)), this, SLOT(setShowGear(int)));
+    connect(showSmO2, SIGNAL(stateChanged(int)), this, SLOT(setShowSmO2(int)));
+    connect(showtHb, SIGNAL(stateChanged(int)), this, SLOT(setShowtHb(int)));
+    connect(showO2Hb, SIGNAL(stateChanged(int)), this, SLOT(setShowO2Hb(int)));
+    connect(showHHb, SIGNAL(stateChanged(int)), this, SLOT(setShowHHb(int)));
+    connect(showATISS, SIGNAL(stateChanged(int)), this, SLOT(setShowATISS(int)));
+    connect(showANTISS, SIGNAL(stateChanged(int)), this, SLOT(setShowANTISS(int)));
+    connect(showXP, SIGNAL(stateChanged(int)), this, SLOT(setShowXP(int)));
+    connect(showAP, SIGNAL(stateChanged(int)), this, SLOT(setShowAP(int)));
+    connect(showSpeed, SIGNAL(stateChanged(int)), this, SLOT(setShowSpeed(int)));
+    connect(showAccel, SIGNAL(stateChanged(int)), this, SLOT(setShowAccel(int)));
     connect(showAlt, SIGNAL(stateChanged(int)), this, SLOT(setShowAlt(int)));
+    connect(showSlope, SIGNAL(stateChanged(int)), this, SLOT(setShowSlope(int)));
+    connect(showAltSlope, SIGNAL(currentIndexChanged(int)), this, SLOT(setShowAltSlope(int)));
+    connect(showTemp, SIGNAL(stateChanged(int)), this, SLOT(setShowTemp(int)));
+    connect(showWind, SIGNAL(stateChanged(int)), this, SLOT(setShowWind(int)));
+    connect(showW, SIGNAL(stateChanged(int)), this, SLOT(setShowW(int)));
+    connect(showBalance, SIGNAL(stateChanged(int)), this, SLOT(setShowBalance(int)));
+    connect(showPS, SIGNAL(stateChanged(int)), this, SLOT(setShowPS(int)));
+    connect(showTE, SIGNAL(stateChanged(int)), this, SLOT(setShowTE(int)));
+    connect(showPCO, SIGNAL(stateChanged(int)), this, SLOT(setShowPCO(int)));
+    connect(showDC, SIGNAL(stateChanged(int)), this, SLOT(setShowDC(int)));
+    connect(showPPP, SIGNAL(stateChanged(int)), this, SLOT(setShowPPP(int)));
+
     connect(showGrid, SIGNAL(stateChanged(int)), this, SLOT(setShowGrid(int)));
+    connect(showFull, SIGNAL(stateChanged(int)), this, SLOT(setShowFull(int)));
+    connect(showInterval, SIGNAL(stateChanged(int)), this, SLOT(setShowInterval(int)));
+    connect(showHelp, SIGNAL(stateChanged(int)), this, SLOT(setShowHelp(int)));
     connect(showStack, SIGNAL(stateChanged(int)), this, SLOT(showStackChanged(int)));
+    connect(rStack, SIGNAL(stateChanged(int)), this, SLOT(showStackChanged(int)));
+    connect(showBySeries, SIGNAL(stateChanged(int)), this, SLOT(showBySeriesChanged(int)));
+    connect(rBySeries, SIGNAL(stateChanged(int)), this, SLOT(showBySeriesChanged(int)));
+    connect(rFull, SIGNAL(stateChanged(int)), this, SLOT(setShowFull(int)));
+    connect(rHelp, SIGNAL(stateChanged(int)), this, SLOT(setShowHelp(int)));
+    connect(paintBrush, SIGNAL(stateChanged(int)), this, SLOT(setPaintBrush(int)));
     connect(comboDistance, SIGNAL(currentIndexChanged(int)), this, SLOT(setByDistance(int)));
     connect(smoothSlider, SIGNAL(valueChanged(int)), this, SLOT(setSmoothingFromSlider()));
     connect(smoothLineEdit, SIGNAL(editingFinished()), this, SLOT(setSmoothingFromLineEdit()));
+    connect(rSmoothSlider, SIGNAL(valueChanged(int)), this, SLOT(setrSmoothingFromSlider()));
+    connect(rSmoothEdit, SIGNAL(editingFinished()), this, SLOT(setrSmoothingFromLineEdit()));
 
     // normal view
     connect(spanSlider, SIGNAL(lowerPositionChanged(int)), this, SLOT(zoomChanged()));
     connect(spanSlider, SIGNAL(upperPositionChanged(int)), this, SLOT(zoomChanged()));
 
     // stacked view
-    connect(stackZoomUp, SIGNAL(clicked()), this, SLOT(setStackZoomUp()));
-    connect(stackZoomDown, SIGNAL(clicked()), this, SLOT(setStackZoomDown()));
     connect(scrollLeft, SIGNAL(clicked()), this, SLOT(moveLeft()));
     connect(scrollRight, SIGNAL(clicked()), this, SLOT(moveRight()));
+    connect(stackZoomSlider, SIGNAL(valueChanged(int)), this, SLOT(stackZoomSliderChanged()));
 
     // GC signals
-    connect(mainWindow, SIGNAL(rideSelected()), this, SLOT(rideSelected()));
-    connect(mainWindow, SIGNAL(rideDirty()), this, SLOT(rideSelected()));
-    connect(mainWindow, SIGNAL(zonesChanged()), this, SLOT(zonesChanged()));
-    connect(mainWindow, SIGNAL(intervalsChanged()), this, SLOT(intervalsChanged()));
-    connect(mainWindow, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
-    connect(mainWindow, SIGNAL(configChanged()), allPlot, SLOT(configChanged()));
-    connect(mainWindow, SIGNAL(configChanged()), this, SLOT(configChanged()));
+    connect(this, SIGNAL(rideItemChanged(RideItem*)), this, SLOT(rideSelected()));
+    connect(context, SIGNAL(rideDirty(RideItem*)), this, SLOT(rideSelected()));
+    connect(context, SIGNAL(rideChanged(RideItem*)), this, SLOT(forceReplot()));
+    connect(context, SIGNAL(configChanged(qint32)), this, SLOT(configChanged(qint32)));
+    connect(context->athlete, SIGNAL(zonesChanged()), this, SLOT(zonesChanged()));
+    connect(context, SIGNAL(intervalsChanged()), this, SLOT(intervalsChanged()));
+    connect(context, SIGNAL(intervalZoom(IntervalItem*)), this, SLOT(zoomInterval(IntervalItem*)));
+    connect(context, SIGNAL(zoomOut()), this, SLOT(zoomOut()));
+    connect(context, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
+    connect(context, SIGNAL(rideDeleted(RideItem*)), this, SLOT(rideDeleted(RideItem*)));
+
+    // comparing things
+    connect(context, SIGNAL(compareIntervalsStateChanged(bool)), this, SLOT(compareChanged()));
+    connect(context, SIGNAL(compareIntervalsChanged()), this, SLOT(compareChanged()));
+
+    // set initial colors
+    configChanged(CONFIG_APPEARANCE);
 }
 
 void
-AllPlotWindow::configChanged()
+AllPlotWindow::configChanged(qint32 state)
 {
-    fullPlot->setCanvasBackground(GColor(CPLOTTHUMBNAIL));
+    setUpdatesEnabled(false);
+
+    setProperty("color", GColor(CRIDEPLOTBACKGROUND));
+
+    // Container widgets should not paint
+    // since they tend to use naff defaults and
+    // 'complicate' or 'make busy' the general
+    // look and feel
+    QPalette palette;
+    palette.setBrush(QPalette::Background, QBrush(GColor(CRIDEPLOTBACKGROUND)));
+    setPalette(palette); // propagates to children
+
+    // set style sheets
+#ifndef Q_OS_MAC
+    allPlotFrame->setStyleSheet(TabView::ourStyleSheet());
+    comparePlotFrame->setStyleSheet(TabView::ourStyleSheet());
+    seriesstackFrame->setStyleSheet(TabView::ourStyleSheet());
+    stackFrame->setStyleSheet(TabView::ourStyleSheet());
+    overlayIntervals->setStyleSheet(TabView::ourStyleSheet());
+#endif
+
+    // set palettes
+    allStack->setPalette(palette);
+    allPlotStack->setPalette(palette);
+    allPlotFrame->setPalette(palette);
+    allPlotFrame->viewport()->setPalette(palette); // its a scroll area
+
+    comparePlotFrame->setPalette(palette);
+    comparePlotWidget->setPalette(palette);
+    seriesstackFrame->setPalette(palette);
+    seriesstackWidget->setPalette(palette);
+    stackFrame->setPalette(palette);
+    stackWidget->setPalette(palette);
+    stackZoomSlider->setPalette(palette);
+    scrollLeft->setPalette(palette);
+    scrollRight->setPalette(palette);
+
+
+    fullPlot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+    fullPlot->setPalette(palette);
+    fullPlot->configChanged(state);
+    fullPlot->update();
+
+    intervalPlot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+    intervalPlot->setPalette(palette);
+    intervalPlot->configChanged(state);
+    intervalPlot->update();
+
+    // allPlot of course
+    allPlot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+    allPlot->setPalette(palette);
+    allPlot->configChanged(state);
+    allPlot->update();
+
+    // and then the stacked plot
+    foreach (AllPlot *plot, allPlots) {
+        plot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+        plot->setPalette(palette);
+        plot->configChanged(state);
+        plot->update();
+    }
+
+    // and then the series plots
+    foreach (AllPlot *plot, seriesPlots) {
+        plot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+        plot->setPalette(palette);
+        plot->configChanged(state);
+        plot->update();
+    }
+
+    // and then the compaer plots
+    foreach (AllPlot *plot, allComparePlots) {
+        plot->setCanvasBackground(GColor(CRIDEPLOTBACKGROUND));
+        plot->setPalette(palette);
+        plot->configChanged(state);
+        plot->update();
+    }
+
+    setUpdatesEnabled(true);
 
     // we're going to replot, but only if we're active
     // and all the other guff
-    RideItem *ride = mainWindow->rideItem();
-    if (mainWindow->activeTab() != this) {
+    RideItem *ride = myRideItem;
+    if (!amVisible()) {
         stale = true;
         return;
     }
@@ -343,16 +850,381 @@ AllPlotWindow::configChanged()
     // ignore if null, or manual / empty
     if (!ride || !ride->ride() || !ride->ride()->dataPoints().count()) return;
 
-    // ok replot with the new config!
-    redrawFullPlot();
-    redrawAllPlot();
-    redrawStackPlot();
+    // reset the charts etc
+    if (isCompare()) {
+
+        compareChanged();
+
+    } else {
+
+        // ok replot with the new config!
+        redrawFullPlot();
+        redrawAllPlot();
+        redrawStackPlot();
+    }
+
+    // just force a replot if wbal changed
+    // and we are actually plotting wbal !
+    if (state & CONFIG_WBAL && showW->isChecked()) forceReplot();
+}
+
+bool
+AllPlotWindow::event(QEvent *event)
+{
+    // nasty nasty nasty hack to move widgets as soon as the widget geometry
+    // is set properly by the layout system, by default the width is 100 and 
+    // we wait for it to be set properly then put our helper widget on the RHS
+    if (event->type() == QEvent::Resize && geometry().width() != 100) {
+
+        // put somewhere nice on first show
+        if (firstShow) {
+            firstShow = false;
+            helperWidget()->move(mainWidget()->geometry().width()-275, 50);
+            helperWidget()->raise();
+
+            if (isShowHelp()) helperWidget()->show();
+            else helperWidget()->hide();
+        }
+
+        // if off the screen move on screen
+        if (helperWidget()->geometry().x() > geometry().width()) {
+            helperWidget()->move(mainWidget()->geometry().width()-275, 50);
+        }
+    }
+    return QWidget::event(event);
+}
+
+void
+AllPlotWindow::compareChanged()
+{
+    if (!amVisible()) {
+        if (context->isCompareIntervals) compareStale = true; // switched on
+        else stale = true; // switched off
+        return;
+    }
+
+    // we get busy so lets turn off updates till we're done
+    setUpdatesEnabled(false);
+
+    // clean up old
+    foreach(AllPlotObject *p, compareIntervalCurves) delete p;
+    compareIntervalCurves.clear();
+
+    // new ones ..
+    if (context->isCompareIntervals) {
+
+        // first, lets init fullPlot, just in case its never
+        // been set (ie, switched to us before ever plotting a ride
+        if (myRideItem) fullPlot->setDataFromRide(myRideItem);
+
+        // and even if the current ride is blank, we're not
+        // going to be blank !!
+        setIsBlank(false);
+
+        //
+        // SETUP INTERVALPLOT FOR COMPARE MODE
+        //
+        // No interval plot in compare mode yet
+        intervalPlot->hide();
+
+        //
+        // SETUP FULLPLOT FOR COMPARE MODE
+        // 
+        int maxKM=0, maxSECS=0;
+
+        fullPlot->standard->setVisible(false);
+        if (fullPlot->smooth < 1) fullPlot->smooth = 1;
+        foreach(CompareInterval ci, context->compareIntervals) {
+
+            AllPlotObject *po = new AllPlotObject(fullPlot);
+            if (ci.isChecked()) fullPlot->setDataFromRideFile(ci.data, po);
+
+            // what was the maximum x value?
+            if (po->maxKM > maxKM) maxKM = po->maxKM;
+            if (po->maxSECS > maxSECS) maxSECS = po->maxSECS;
+
+            // prettify / hide unnecessary guff
+            po->setColor(ci.color);
+            po->hideUnwanted();
+
+            // remember
+            compareIntervalCurves << po;
+        }
+
+        // what is the longest compareInterval?
+        if (fullPlot->bydist) fullPlot->setAxisScale(QwtPlot::xBottom, 0, maxKM);
+        else fullPlot->setAxisScale(QwtPlot::xBottom, 0, maxSECS/60);
+
+        // now set it it in all the compare objects so they all get set
+        // to the same time / duration
+        foreach (AllPlotObject *po, compareIntervalCurves) {
+            po->maxKM = maxKM;
+            po->maxSECS = maxSECS;
+        }
+
+        if (fullPlot->bydist == false) {
+            spanSlider->setMinimum(0);
+            spanSlider->setMaximum(maxSECS);
+        } else {
+            spanSlider->setMinimum(0);
+            spanSlider->setMaximum(maxKM * 1000);
+        }
+        spanSlider->setLowerValue(spanSlider->minimum());
+        spanSlider->setUpperValue(spanSlider->maximum());
+
+        // redraw for red/no-red title
+        fullPlot->replot();
+
+        //
+        // SETUP ALLPLOT AS A STACK FOR EACH INTERVAL
+        //
+        allStack->setCurrentIndex(1);
+
+        // first lets wipe the old ones
+        foreach (AllPlot *ap, allComparePlots) delete ap;
+        allComparePlots.clear();
+        if (comparePlotLayout->count() == 1) {
+            comparePlotLayout->takeAt(0); // remove the stretch
+        }
+
+        // now lets throw up one for each interval that
+        // is checked
+        int i=0;
+        foreach(CompareInterval ci, context->compareIntervals) {
+
+            // create a new one using the interval data object and
+            // referencing fullPlot for the user prefs etc
+            AllPlot *ap = new AllPlot(this, this, context);
+            ap->bydist = fullPlot->bydist;
+            ap->setShadeZones(showPower->currentIndex() == 0);
+            ap->setDataFromObject(compareIntervalCurves[i], fullPlot);
+
+            // simpler to keep the indexes aligned
+            if (!ci.isChecked()) ap->hide();
+
+            // tooltip on hover over point -- consider moving this to AllPlot (!)
+            ap->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtAxisId(QwtAxis::yLeft, 2).id,
+                                    QwtPicker::VLineRubberBand,
+                                    QwtPicker::AlwaysOn,
+                                    ap->canvas(),
+                                    "");
+            ap->tooltip->setRubberBand(QwtPicker::VLineRubberBand);
+            ap->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton);
+            ap->tooltip->setTrackerPen(QColor(Qt::black));
+            QColor inv(Qt::white);
+            inv.setAlpha(0);
+            ap->tooltip->setRubberBandPen(inv);
+            ap->tooltip->setEnabled(true);
+
+            ap->_canvasPicker = new LTMCanvasPicker(ap);
+            connect(ap->_canvasPicker, SIGNAL(pointHover(QwtPlotCurve*, int)), ap, SLOT(pointHover(QwtPlotCurve*, int)));
+
+            // format it for our purposes
+            if (fullPlot->bydist) ap->setAxisScale(QwtPlot::xBottom, 0, maxKM);
+            else ap->setAxisScale(QwtPlot::xBottom, 0, maxSECS/60.00f);
+            ap->setFixedHeight(120 + (stackWidth *4));
+
+            // add to layout
+            comparePlotLayout->addWidget(ap);
+            allComparePlots << ap;
+
+            i++;
+        }
+        comparePlotLayout->addStretch();
+
+        //
+        // SETUP STACK SERIES
+        //
+
+        // Wipe away whatever is there
+        foreach(AllPlot *plot, seriesPlots) delete plot;
+        seriesPlots.clear();
+        // and the stretch
+        while (seriesstackPlotLayout->count()) {
+            delete seriesstackPlotLayout->takeAt(0);
+        }
+
+        // work out what we want to see
+        QList<SeriesWanted> wanted;
+        SeriesWanted s;
+        if (showPower->currentIndex() < 2) { s.one = RideFile::watts; s.two = RideFile::none; wanted << s;};
+        if (showPowerD->isChecked()) { s.one = RideFile::wattsd; s.two = RideFile::none; wanted << s;};
+        if (showHr->isChecked()) { s.one = RideFile::hr; s.two = RideFile::none; wanted << s;};
+        if (showHrD->isChecked()) { s.one = RideFile::hrd; s.two = RideFile::none; wanted << s;};
+        if (showSpeed->isChecked()) { s.one = RideFile::kph; s.two = RideFile::none; wanted << s;};
+        if (showAccel->isChecked()) { s.one = RideFile::kphd; s.two = RideFile::none; wanted << s;};
+        if (showCad->isChecked()) { s.one = RideFile::cad; s.two = RideFile::none; wanted << s;};
+        if (showCadD->isChecked()) { s.one = RideFile::cadd; s.two = RideFile::none; wanted << s;};
+        if (showTorque->isChecked()) { s.one = RideFile::nm; s.two = RideFile::none; wanted << s;};
+        if (showTorqueD->isChecked()) { s.one = RideFile::nmd; s.two = RideFile::none; wanted << s;};
+        if (showAlt->isChecked()) { s.one = RideFile::alt; s.two = RideFile::none; wanted << s;};
+        if (showSlope->isChecked()) { s.one = RideFile::slope; s.two = RideFile::none; wanted << s;};
+        if (showAltSlope->currentIndex() > 0) { s.one = RideFile::alt; s.two = RideFile::slope; wanted << s;}; // ALT/SLOPE !
+        if (showTemp->isChecked()) { s.one = RideFile::temp; s.two = RideFile::none; wanted << s;};
+        if (showWind->isChecked()) { s.one = RideFile::headwind; s.two = RideFile::none; wanted << s;};
+        if (showNP->isChecked()) { s.one = RideFile::NP; s.two = RideFile::none; wanted << s;};
+        if (showRV->isChecked()) { s.one = RideFile::rvert; s.two = RideFile::none; wanted << s;};
+        if (showRCad->isChecked()) { s.one = RideFile::rcad; s.two = RideFile::none; wanted << s;};
+        if (showRGCT->isChecked()) { s.one = RideFile::rcontact; s.two = RideFile::none; wanted << s;};
+        if (showGear->isChecked()) { s.one = RideFile::gear; s.two = RideFile::none; wanted << s;};
+        if (showSmO2->isChecked()) { s.one = RideFile::smo2; s.two = RideFile::none; wanted << s;};
+        if (showtHb->isChecked()) { s.one = RideFile::thb; s.two = RideFile::none; wanted << s;};
+        if (showO2Hb->isChecked()) { s.one = RideFile::o2hb; s.two = RideFile::none; wanted << s;};
+        if (showHHb->isChecked()) { s.one = RideFile::hhb; s.two = RideFile::none; wanted << s;};
+        if (showATISS->isChecked()) { s.one = RideFile::aTISS; s.two = RideFile::none; wanted << s;};
+        if (showANTISS->isChecked()) { s.one = RideFile::anTISS; s.two = RideFile::none; wanted << s;};
+        if (showXP->isChecked()) { s.one = RideFile::xPower; s.two = RideFile::none; wanted << s;};
+        if (showAP->isChecked()) { s.one = RideFile::aPower; s.two = RideFile::none; wanted << s;};
+        if (showW->isChecked()) { s.one = RideFile::wprime; s.two = RideFile::none; wanted << s;};
+        if (showBalance->isChecked()) { s.one = RideFile::lrbalance; s.two = RideFile::none; wanted << s;};
+
+        /*
+        if (showTE->isChecked()) {
+            s.one = RideFile::lte; s.two = RideFile::none; wanted << s;
+            s.one = RideFile::rte; s.two = RideFile::none; wanted << s;
+        }
+        if (showPS->isChecked()) {
+            s.one = RideFile::lps; s.two = RideFile::none; wanted << s;
+            s.one = RideFile::rps; s.two = RideFile::none; wanted << s;
+        }
+        if (showPCO->isChecked()) {
+            s.one = RideFile::lpco; s.two = RideFile::rpco; wanted << s;
+        }
+        if (showDC->isChecked()) {
+            s.one = RideFile::lppb; s.two = RideFile::lppe; wanted << s;
+            s.one = RideFile::rppb; s.two = RideFile::rppe; wanted << s;
+        }
+        if (showPPP->isChecked()) {
+            s.one = RideFile::lpppb; s.two = RideFile::lpppe; wanted << s;
+            s.one = RideFile::rpppb; s.two = RideFile::rpppe; wanted << s;
+        }*/
+
+        // create blank and add to gui
+        QPalette palette;
+        palette.setBrush(QPalette::Background, Qt::NoBrush);
+
+        foreach(SeriesWanted x, wanted) {
+
+            // create and setup with normal gui stuff
+            AllPlot *plot = new AllPlot(this, this, context, x.one, x.two, false);
+            plot->setPalette(palette);
+            plot->setAutoFillBackground(false);
+            plot->setFixedHeight(120+(stackWidth*4));
+
+            // tooltip on hover over point -- consider moving this to AllPlot (!)
+            plot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtAxisId(QwtAxis::yLeft, 2).id,
+                                    QwtPicker::VLineRubberBand,
+                                    QwtPicker::AlwaysOn,
+                                    plot->canvas(),
+                                    "");
+            plot->tooltip->setRubberBand(QwtPicker::VLineRubberBand);
+            plot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton);
+            plot->tooltip->setTrackerPen(QColor(Qt::black));
+            QColor inv(Qt::white);
+            inv.setAlpha(0);
+            plot->tooltip->setRubberBandPen(inv);
+            plot->tooltip->setEnabled(true);
+
+            plot->_canvasPicker = new LTMCanvasPicker(plot);
+            connect(plot->_canvasPicker, SIGNAL(pointHover(QwtPlotCurve*, int)), plot, SLOT(pointHover(QwtPlotCurve*, int)));
+            // No x axis titles
+            plot->bydist = fullPlot->bydist;
+            if (x.one == RideFile::watts) plot->setShadeZones(showPower->currentIndex() == 0);
+            else plot->setShadeZones(false);
+            plot->setAxisVisible(QwtPlot::xBottom, true);
+            plot->enableAxis(QwtPlot::xBottom, true);
+            plot->setAxisTitle(QwtPlot::xBottom,NULL);
+
+            // common y axis
+            QwtScaleDraw *sd = new QwtScaleDraw;
+            sd->setTickLength(QwtScaleDiv::MajorTick, 3);
+            sd->enableComponent(QwtScaleDraw::Ticks, false);
+            sd->enableComponent(QwtScaleDraw::Backbone, false);
+            plot->setAxisScaleDraw(QwtPlot::yLeft, sd);
+    
+            // y-axis title and colour
+            if (x.one == RideFile::alt && x.two == RideFile::slope) {
+                plot->setAxisTitle(QwtPlot::yLeft, tr("Alt/Slope"));
+                plot->showAltSlopeState = allPlot->showAltSlopeState;
+                plot->setAltSlopePlotStyle(allPlot->standard->altSlopeCurve);
+               } else {
+                plot->setAxisTitle(QwtPlot::yLeft, RideFile::seriesName(x.one));
+            }
+            QPalette pal;
+            pal.setColor(QPalette::WindowText, RideFile::colorFor(x.one));
+            pal.setColor(QPalette::Text, RideFile::colorFor(x.one));
+            plot->axisWidget(QwtPlot::yLeft)->setPalette(pal);
+
+            // remember them
+            seriesstackPlotLayout->addWidget(plot);
+            seriesPlots << plot;
+        }
+
+        seriesstackPlotLayout->addStretch();
+
+        // now lets get each of them loaded up with data and in the right format!
+        foreach(AllPlot *compare, seriesPlots) {
+
+            // update the one already there
+            compare->standard->setVisible(false);
+            compare->setDataFromPlots(allComparePlots);
+
+            // format it for our purposes
+            compare->bydist = fullPlot->bydist;
+            if (fullPlot->bydist) compare->setAxisScale(QwtPlot::xBottom, 0, maxKM);
+            else compare->setAxisScale(QwtPlot::xBottom, 0, maxSECS/60.00f);
+            compare->setXTitle();
+
+            compare->replot();
+        }
+
+        // now remove any series plots that are empty
+        for(int i=0; i<seriesPlots.count();) {
+            if (seriesPlots[i]->compares.count() == 0 || seriesPlots[i]->compares[0]->data()->size() == 0) {
+                delete seriesPlots[i];
+                seriesPlots.removeAt(i);
+            } else {
+                i++;
+            }
+        }
+
+        // ok, we're done
+
+    } else {
+
+        if (showInterval->isChecked())
+            intervalPlot->show();
+
+        // reset to normal view?
+        fullPlot->standard->setVisible(true);
+
+        // back to allplot
+        allStack->setCurrentIndex(0);
+
+        // reset by just calling ride selected
+        // and setting stale to true.. simpler this way
+        stale = true;
+        rideSelected();
+    }
+
+    // we're not stale anymore
+    compareStale = false;
+
+    // set the widgets straight
+    setAllPlotWidgets(NULL);
+
+    // Now we're done lets paint
+    setUpdatesEnabled(true);
+    repaint();
+
 }
 
 void
 AllPlotWindow::redrawAllPlot()
 {
-    if (!showStack->isChecked() && current) {
+    // refresh if shown or used as basis for stacked series (ie zooming off fullPlot)
+    if (((showStack->isChecked() && showBySeries->isChecked()) || !showStack->isChecked())  && current) {
+
         RideItem *ride = current;
 
         int startidx, stopidx;
@@ -378,7 +1250,7 @@ AllPlotWindow::redrawAllPlot()
 void
 AllPlotWindow::redrawFullPlot()
 {
-    // always peformed sincethe data is used
+    // always performed since the data is used
     // by both the stack plots and the allplot
     RideItem *ride = current;
 
@@ -386,43 +1258,78 @@ AllPlotWindow::redrawFullPlot()
     if (!ride) return;
 
     // hide the usual plot decorations etc
-    fullPlot->showPower(1);
-    fullPlot->setCanvasBackground(GColor(CPLOTTHUMBNAIL));
-    fullPlot->setCanvasLineWidth(0);
-    fullPlot->grid->enableY(false);
-    fullPlot->enableAxis(QwtPlot::yLeft, false);
-    fullPlot->enableAxis(QwtPlot::yLeft2, false);
-    fullPlot->enableAxis(QwtPlot::yRight, false);
-    fullPlot->enableAxis(QwtPlot::yRight2, false);
-    fullPlot->enableAxis(QwtPlot::xBottom, false);
-    fullPlot->legend()->clear();
-    //fullPlot->setTitle("");
+    fullPlot->setShowPower(1);
+    //We now use the window background color
+    //fullPlot->setCanvasBackground(GColor(CPLOTTHUMBNAIL));
+    static_cast<QwtPlotCanvas*>(fullPlot->canvas())->setBorderRadius(0);
+    fullPlot->standard->grid->enableY(false);
 
+    // use the ride to decide
     if (fullPlot->bydist)
-        fullPlot->setAxisScale(QwtPlot::xBottom, 
-        ride->ride()->dataPoints().first()->km * (fullPlot->useMetricUnits ? 1 : MILES_PER_KM),
-        ride->ride()->dataPoints().last()->km * (fullPlot->useMetricUnits ? 1 : MILES_PER_KM));
+        fullPlot->setAxisScale(QwtPlot::xBottom,
+        ride->ride()->dataPoints().first()->km * (context->athlete->useMetricUnits ? 1 : MILES_PER_KM),
+        ride->ride()->dataPoints().last()->km * (context->athlete->useMetricUnits ? 1 : MILES_PER_KM));
     else
         fullPlot->setAxisScale(QwtPlot::xBottom, ride->ride()->dataPoints().first()->secs/60,
-                                                 ride->ride()->dataPoints().last()->secs/60);
+                                                ride->ride()->dataPoints().last()->secs/60);
+
     fullPlot->replot();
+}
+
+void
+AllPlotWindow::redrawIntervalPlot()
+{
+    // always performed since the data is used
+    // by both the stack plots and the allplot
+    RideItem *ride = current;
+
+    // null rides are possible on new cyclist
+    if (!ride) return;
+
+    static_cast<QwtPlotCanvas*>(intervalPlot->canvas())->setBorderRadius(0);
+
+    // use the ride to decide
+    if (intervalPlot->bydist)
+        intervalPlot->setAxisScale(QwtPlot::xBottom,
+        ride->ride()->dataPoints().first()->km * (context->athlete->useMetricUnits ? 1 : MILES_PER_KM),
+        ride->ride()->dataPoints().last()->km * (context->athlete->useMetricUnits ? 1 : MILES_PER_KM));
+    else
+        intervalPlot->setAxisScale(QwtPlot::xBottom, ride->ride()->dataPoints().first()->secs/60,
+                                                ride->ride()->dataPoints().last()->secs/60);
+
+    intervalPlot->replot();
 }
 
 void
 AllPlotWindow::redrawStackPlot()
 {
-    if (showStack->isChecked() && current) {
+    if (showStack->isChecked()) {
 
         // turn off display updates whilst we
         // do this, it takes a while and is prone
         // to screen flicker
         stackFrame->setUpdatesEnabled(false);
 
-        // remove current plots - then recreate
-        resetStackedDatas();
 
-        // now they are all set, lets replot
-        foreach(AllPlot *plot, allPlots) plot->replot();
+        // plot stack view ..
+        if (!showBySeries->isChecked()) {
+
+            // BY TIME / DISTANCE
+
+            // remove current plots - then recreate
+            resetStackedDatas();
+
+            // now they are all set, lets replot
+            foreach(AllPlot *plot, allPlots) plot->replot();
+
+        } else {
+
+            // BY SERIES
+            resetSeriesStackedDatas();
+
+            // now they are all set, lets replot
+            foreach(AllPlot *plot, seriesPlots) plot->replot();
+        }
 
         // we're done, go update the display now
         stackFrame->setUpdatesEnabled(true);
@@ -432,7 +1339,30 @@ AllPlotWindow::redrawStackPlot()
 void
 AllPlotWindow::zoomChanged()
 {
-    redrawAllPlot();
+    if (isCompare()) {
+
+        // zoom in all the compare plots
+        foreach (AllPlot *plot, allComparePlots) {
+            if (fullPlot->bydist) plot->setAxisScale(QwtPlot::xBottom, spanSlider->lowerValue()/1000.00f, spanSlider->upperValue()/1000.00f);
+            else plot->setAxisScale(QwtPlot::xBottom, spanSlider->lowerValue() / 60.00f, spanSlider->upperValue() / 60.00f);
+
+            plot->replot();
+        }
+
+        // and the series plots
+        foreach (AllPlot *plot, seriesPlots) {
+            if (fullPlot->bydist) plot->setAxisScale(QwtPlot::xBottom, spanSlider->lowerValue()/1000.00f, spanSlider->upperValue()/1000.00f);
+            else plot->setAxisScale(QwtPlot::xBottom, spanSlider->lowerValue() / 60.00f, spanSlider->upperValue() / 60.00f);
+
+            plot->replot();
+        }
+
+
+    } else {
+
+        redrawAllPlot();
+        redrawStackPlot(); // series stacks!
+    }
 }
 
 void
@@ -464,20 +1394,45 @@ AllPlotWindow::moveRight()
 }
 
 void
+AllPlotWindow::forceReplot()
+{
+    stale=true;
+    rideSelected();
+}
+
+void
 AllPlotWindow::rideSelected()
 {
-    RideItem *ride = mainWindow->rideItem();
+    // compare mode ignores ride selection
+    if (isVisible() && isCompare()) {
+        if (compareStale) compareChanged();
+        return;
+    }
+
+    RideItem *ride = myRideItem;
+
+    if (ride == NULL) current = NULL;
 
     // ignore if not active
-    if (mainWindow->activeTab() != this) {
+    if (!amVisible()) {
         stale = true;
+        setupSeriesStack = setupStack = false;
         return;
     }
 
     // ignore if null, or manual / empty
-    if (!ride || !ride->ride() || !ride->ride()->dataPoints().count()) return;
+    if (!ride || !ride->ride() || !ride->ride()->dataPoints().count()) {
+        current = NULL;
+        setIsBlank(true);
+        return;
+    }
+    else
+        setIsBlank(false);
 
     // we already plotted it!
+    //XXX the !ride->isDirty() code below makes GC crash when selecting
+    //XXX on the canvas ?!??!? No idea why, but commenting out for now
+    //XXX if (!ride->isDirty() && ride == current && stale == false) return;
     if (ride == current && stale == false) return;
 
     // ok, its now the current ride
@@ -493,23 +1448,57 @@ AllPlotWindow::rideSelected()
 
     // setup the charts to reflect current ride selection
     fullPlot->setDataFromRide(ride);
-    allPlot->setDataFromPlot(fullPlot, ride->ride()->timeIndex(spanSlider->lowerValue()),
-                                ride->ride()->timeIndex(spanSlider->upperValue()));
+    intervalPlot->setDataFromRide(ride);
+
+
+    // Fixup supplied by Josef Gebel
+    int startidx, stopidx;
+    if ( fullPlot->bydist == true ) {
+        startidx = ride->ride()->distanceIndex( ( double ) spanSlider->lowerValue() / 1000.0 );
+        stopidx = ride->ride()->distanceIndex( ( double ) spanSlider->upperValue() / 1000.0 );
+    } else {
+        startidx = ride->ride()->timeIndex( spanSlider->lowerValue() );
+        stopidx = ride->ride()->timeIndex( spanSlider->upperValue() );
+    }
+    allPlot->setDataFromPlot( fullPlot, startidx, stopidx );
 
     // redraw all the plots, they will check
     // to see if they are currently visible
     // and only redraw if neccessary
     redrawFullPlot();
+    redrawIntervalPlot();
     redrawAllPlot();
+
+    // we need to reset the stacks as the ride has changed
+    // but it may ignore if not in stacked mode.
+    setupSeriesStack = setupStack = false;
+
     setupStackPlots();
+    setupSeriesStackPlots();
 
     stale = false;
 }
 
 void
+AllPlotWindow::rideDeleted(RideItem *ride)
+{
+    if (ride == myRideItem) {
+        // we have nothing to show
+        setProperty("ride", QVariant::fromValue<RideItem*>(NULL));
+
+        // notify all the plots, because when zones are redrawn
+        // they will try and reference AllPlot::rideItem
+        if (!isCompare()) {
+            setAllPlotWidgets(NULL);
+            fullPlot->setDataFromRide(NULL);
+        }
+    }
+}
+
+void
 AllPlotWindow::zonesChanged()
 {
-    if (mainWindow->activeTab() != this) {
+    if (!amVisible()) {
         stale = true;
         return;
     }
@@ -521,7 +1510,7 @@ AllPlotWindow::zonesChanged()
 void
 AllPlotWindow::intervalsChanged()
 {
-    if (mainWindow->activeTab() != this) {
+    if (!amVisible()) {
         stale = true;
         return;
     }
@@ -529,6 +1518,9 @@ AllPlotWindow::intervalsChanged()
     // show selection on fullplot too
     fullPlot->refreshIntervalMarkers();
     fullPlot->replot();
+
+    intervalPlot->refreshIntervals();
+    intervalPlot->replot();
 
     // allPlot of course
     allPlot->refreshIntervalMarkers();
@@ -539,12 +1531,19 @@ AllPlotWindow::intervalsChanged()
         plot->refreshIntervalMarkers();
         plot->replot();
     }
+
+    // and then the series plots
+    foreach (AllPlot *plot, seriesPlots) {
+        plot->refreshIntervalMarkers();
+        plot->replot();
+    }
+
 }
 
 void
 AllPlotWindow::intervalSelected()
 {
-    if (mainWindow->activeTab() != this) {
+    if (isCompare() || !amVisible()) {
         stale = true;
         return;
     }
@@ -557,12 +1556,41 @@ AllPlotWindow::intervalSelected()
     // which mode we are in...
     hideSelection();
     if (showStack->isChecked()) {
-        foreach (AllPlot *plot, allPlots)
-            plot->replot();
+
+        if (showBySeries->isChecked()) {
+            foreach (AllPlot *plot, seriesPlots)
+                plot->replot();
+        } else {
+            foreach (AllPlot *plot, allPlots)
+                plot->replot();
+        }
     } else {
         fullPlot->replot();
         allPlot->replot();
     }
+}
+
+void
+AllPlotWindow::setStacked(int value)
+{
+    showStack->setChecked(value);
+    rStack->setChecked(value);
+
+    // enables / disable as needed
+    if (showStack->isChecked()) {
+        showBySeries->setEnabled(true);
+        rBySeries->setEnabled(true);
+    } else {
+        showBySeries->setEnabled(false);
+        rBySeries->setEnabled(false);
+    }
+}
+
+void
+AllPlotWindow::setBySeries(int value)
+{
+    showBySeries->setChecked(value);
+    rBySeries->setChecked(value);
 }
 
 void
@@ -576,6 +1604,26 @@ AllPlotWindow::setSmoothingFromSlider()
 
     if (allPlot->smooth != smoothSlider->value()) {
         setSmoothing(smoothSlider->value());
+        smoothLineEdit->setText(QString("%1").arg(fullPlot->smooth));
+        rSmoothEdit->setText(QString("%1").arg(fullPlot->smooth));
+        rSmoothSlider->setValue(rSmoothSlider->value());
+    }
+    active = false;
+}
+
+void
+AllPlotWindow::setrSmoothingFromSlider()
+{
+    // active tells us we have been triggered by
+    // the setSmoothingFromLineEdit which will also
+    // recalculates smoothing, lets not double up...
+    if (active) return;
+    else active = true;
+
+    if (allPlot->smooth != rSmoothSlider->value()) {
+        setSmoothing(rSmoothSlider->value());
+        rSmoothEdit->setText(QString("%1").arg(fullPlot->smooth));
+        smoothSlider->setValue(rSmoothSlider->value());
         smoothLineEdit->setText(QString("%1").arg(fullPlot->smooth));
     }
     active = false;
@@ -593,6 +1641,25 @@ AllPlotWindow::setSmoothingFromLineEdit()
     int value = smoothLineEdit->text().toInt();
     if (value != fullPlot->smooth) {
         smoothSlider->setValue(value);
+        rSmoothSlider->setValue(value);
+        setSmoothing(value);
+    }
+    active = false;
+}
+
+void
+AllPlotWindow::setrSmoothingFromLineEdit()
+{
+    // active tells us we have been triggered by
+    // the setSmoothingFromSlider which will also
+    // recalculates smoothing, lets not double up...
+    if (active) return;
+    else active = true;
+
+    int value = rSmoothEdit->text().toInt();
+    if (value != fullPlot->smooth) {
+        rSmoothSlider->setValue(value);
+        smoothSlider->setValue(value);
         setSmoothing(value);
     }
     active = false;
@@ -606,49 +1673,79 @@ AllPlotWindow::setAllPlotWidgets(RideItem *ride)
     // ride. It also hides/shows widgets depending
     // upon wether we are in 'normal' mode or
     // stacked plot mode
+    if (!isCompare()) {
 
-    // checkboxes to show/hide specific data series...
-	const RideFileDataPresent *dataPresent = ride->ride()->areDataPresent();
-    if (ride->ride() && ride->ride()->deviceType() != QString("Manual CSV")) {
+        // set for currently selected ride
+        if (!ride) return;
 
-	    showPower->setEnabled(dataPresent->watts);
-	    showHr->setEnabled(dataPresent->hr);
-	    showSpeed->setEnabled(dataPresent->kph);
-	    showCad->setEnabled(dataPresent->cad);
-	    showAlt->setEnabled(dataPresent->alt);
+        // checkboxes to show/hide specific data series...
+	    const RideFileDataPresent *dataPresent = ride->ride()->areDataPresent();
+        if (ride->ride() && ride->ride()->deviceType() != QString("Manual CSV")) {
 
-    } else {
-	    showPower->setEnabled(false);
-	    showHr->setEnabled(false);
-	    showSpeed->setEnabled(false);
-	    showCad->setEnabled(false);
-	    showAlt->setEnabled(false);
-    }
+	        showPowerD->setEnabled(dataPresent->watts);
+	        showCadD->setEnabled(dataPresent->cad);
+            showTorqueD->setEnabled(dataPresent->nm);
+	        showHrD->setEnabled(dataPresent->hr);
+	        showPower->setEnabled(dataPresent->watts);
+	        showCad->setEnabled(dataPresent->cad);
+            showTorque->setEnabled(dataPresent->nm);
+	        showHr->setEnabled(dataPresent->hr);
+	        showSpeed->setEnabled(dataPresent->kph);
+	        showAccel->setEnabled(dataPresent->kph);
+	        showAlt->setEnabled(dataPresent->alt);
+            showAltSlope->setEnabled(dataPresent->alt);
+            showSlope->setEnabled(dataPresent->slope);
+            showTemp->setEnabled(dataPresent->temp);
+            showWind->setEnabled(dataPresent->headwind);
+            showBalance->setEnabled(dataPresent->lrbalance);
+        } else {
+	        showAccel->setEnabled(false);
+	        showPowerD->setEnabled(false);
+	        showCadD->setEnabled(false);
+            showTorqueD->setEnabled(false);
+	        showHrD->setEnabled(false);
+            showPower->setEnabled(false);
+            showHr->setEnabled(false);
+            showSpeed->setEnabled(false);
+            showCad->setEnabled(false);
+            showAlt->setEnabled(false);
+            showAltSlope->setEnabled(false);
+            showSlope->setEnabled(false);
+            showTemp->setEnabled(false);
+            showWind->setEnabled(false);
+            showTorque->setEnabled(false);
+            showBalance->setEnabled(false);
+        }
 
-    // turn on/off shading, if it's not available
-    bool shade;
-    if (dataPresent->watts) shade = (showPower->currentIndex() == 0);
-    else shade = false;
-    allPlot->setShadeZones(shade);
-    foreach (AllPlot *plot, allPlots) plot->setShadeZones(shade);
+        // turn on/off shading, if it's not available
+        bool shade;
+        if (dataPresent->watts) shade = (showPower->currentIndex() == 0);
+        else shade = false;
+        allPlot->setShadeZones(shade);
+        foreach (AllPlot *plot, allPlots) plot->setShadeZones(shade);
+        allPlot->setShowGrid(showGrid->checkState() == Qt::Checked);
+        foreach (AllPlot *plot, allPlots) plot->setShowGrid(showGrid->checkState() == Qt::Checked);
 
-    // set the SpanSlider for the ride length, by default
-    // show the entire ride (the user can adjust later)
-    if (fullPlot->bydist == false) {
-        spanSlider->setMinimum(ride->ride()->dataPoints().first()->secs);
-        spanSlider->setMaximum(ride->ride()->dataPoints().last()->secs);
-        spanSlider->setLowerValue(spanSlider->minimum());
-        spanSlider->setUpperValue(spanSlider->maximum());
-    } else {
-        spanSlider->setMinimum(ride->ride()->dataPoints().first()->km * 1000);
-        spanSlider->setMaximum(ride->ride()->dataPoints().last()->km * 1000);
-        spanSlider->setLowerValue(spanSlider->minimum());
-        spanSlider->setUpperValue(spanSlider->maximum());
+        // set the SpanSlider for the ride length, by default
+        // show the entire ride (the user can adjust later)
+        if (fullPlot->bydist == false) {
+            spanSlider->setMinimum(ride->ride()->dataPoints().first()->secs);
+            spanSlider->setMaximum(ride->ride()->dataPoints().last()->secs);
+            spanSlider->setLowerValue(spanSlider->minimum());
+            spanSlider->setUpperValue(spanSlider->maximum());
+        } else {
+            spanSlider->setMinimum(ride->ride()->dataPoints().first()->km * 1000);
+            spanSlider->setMaximum(ride->ride()->dataPoints().last()->km * 1000);
+            spanSlider->setLowerValue(spanSlider->minimum());
+            spanSlider->setUpperValue(spanSlider->maximum());
+        }
     }
 
     // now set the visible plots, depending upon whether
     // we are in stacked mode or not
-    if (showStack->isChecked()) {
+    if (!isCompare() && showStack->isChecked() && !showBySeries->isChecked()) {
+
+        // ALL PLOT STACK ORIGINAL AS CODED BY DAMIEN
 
         // hide normal view
         allPlotFrame->hide();
@@ -656,41 +1753,80 @@ AllPlotWindow::setAllPlotWidgets(RideItem *ride)
         fullPlot->hide();
         controlsLayout->setRowStretch(0, 0);
         controlsLayout->setRowStretch(1, 0);
-        spanSlider->hide();
-        scrollLeft->hide();
-        scrollRight->hide();
-
-        stackZoomUp->setEnabled(stackZoomUpShouldEnable(stackWidth));
-        stackZoomDown->setEnabled(stackZoomDownShouldEnable(stackWidth));
 
         // show stacked view
         stackFrame->show();
 
     } else {
 
-        // hide stack view
-        stackZoomDown->setEnabled(false);
-        stackZoomUp->setEnabled(false);
+        // hide stack plots (segmented by time/distance)
         stackFrame->hide();
 
         // show normal view
         allPlotFrame->show();
         allPlot->show();
-        fullPlot->show();
-        controlsLayout->setRowStretch(0, 10);
-        controlsLayout->setRowStretch(1, 1);
-        spanSlider->show();
-        scrollLeft->show();
-        scrollRight->show();
 
-        stackZoomUp->setEnabled(false);
-        stackZoomDown->setEnabled(false);
+        if (showStack->isChecked() && (isCompare() || showBySeries->isChecked())) {
+
+            // STACK SERIES LANES SHOWING
+            allPlotStack->setCurrentIndex(1);
+
+        } else {
+
+            // ALLPLOT 
+            allPlotStack->setCurrentIndex(0);
+
+            if (isCompare()) {
+
+                // COMPARE ALL PLOTS
+                allStack->setCurrentIndex(1); // compare mode stack of all plots
+
+            } else { 
+
+                // NORMAL SINGLE ALL PLOT
+                allStack->setCurrentIndex(0); // normal single allplot
+            }
+
+        }
+
+        // FIXUP FULL PLOT!
+        if (showFull->isChecked()) {
+            fullPlot->show();
+            controlsLayout->setRowStretch(0, 100);
+            controlsLayout->setRowStretch(1, 20);
+        } else {
+            fullPlot->hide();
+
+            if (isCompare()) {
+                controlsLayout->setRowStretch(0, 100);
+                controlsLayout->setRowStretch(1, 00);
+            } else {
+                controlsLayout->setRowStretch(0, 100);
+                controlsLayout->setRowStretch(1, 00);
+            }
+        }
     }
+}
+
+void
+AllPlotWindow::zoomOut()
+{
+    // we don't do that in compare mode
+    if (isCompare()) return;
+
+    // set them to maximums to avoid overlapping
+    // when we set them below, daft but works
+    spanSlider->setLowerValue(spanSlider->minimum());
+    spanSlider->setUpperValue(spanSlider->maximum());
+    zoomChanged();
 }
 
 void
 AllPlotWindow::zoomInterval(IntervalItem *which)
 {
+    // we don't do that in compare mode
+    if (isCompare()) return;
+
     // use the span slider to highlight
     // when we are in normal mode.
 
@@ -712,6 +1848,9 @@ AllPlotWindow::zoomInterval(IntervalItem *which)
 void
 AllPlotWindow::plotPickerSelected(const QPoint &pos)
 {
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
     QwtPlotPicker* pick = qobject_cast<QwtPlotPicker *>(sender());
     AllPlot* plot = qobject_cast<AllPlot *>(pick->plot());
     double xValue = plot->invTransform(QwtPlot::xBottom, pos.x());
@@ -722,7 +1861,10 @@ AllPlotWindow::plotPickerSelected(const QPoint &pos)
 void
 AllPlotWindow::plotPickerMoved(const QPoint &pos)
 {
-    QString name = QString("Selection #%1 ").arg(selection);
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
+    QString name = QString(tr("Selection #%1 ")).arg(selection);
 
     // which picker and plot send this signal?
     QwtPlotPicker* pick = qobject_cast<QwtPlotPicker *>(sender());
@@ -734,21 +1876,21 @@ AllPlotWindow::plotPickerMoved(const QPoint &pos)
     if (showStack->isChecked()) {
 
         // need to highlight across stacked plots
-        foreach (AllPlot *_plot, allPlots) {
+        foreach (AllPlot *_plot, (showBySeries->isChecked() ? seriesPlots : allPlots)) {
 
             // mark the start of selection on every plot
-            _plot->allMarker1->setValue(plot->allMarker1->value());
+            _plot->standard->allMarker1->setValue(plot->standard->allMarker1->value());
 
             if (_plot->y()<=plot->y() && posY<_plot->y()){
 
-                if (_plot->transform(QwtPlot::xBottom, _plot->allMarker2->xValue())>0) {
+                if (_plot->transform(QwtPlot::xBottom, _plot->standard->allMarker2->xValue())>0) {
                     setEndSelection(_plot, 0, false, name);
-                    _plot->allMarker2->setLabel(QString(""));
+                    _plot->standard->allMarker2->setLabel(QString(""));
                 }
 
             } else if (_plot->y()>=plot->y() && posY>_plot->y()+_plot->height()) {
 
-                if (_plot->transform(QwtPlot::xBottom, _plot->allMarker2->xValue())<plot->width()){
+                if (_plot->transform(QwtPlot::xBottom, _plot->standard->allMarker2->xValue())<plot->width()){
                     setEndSelection(_plot, _plot->transform(QwtPlot::xBottom, plot->width()), false, name);
                 }
             }
@@ -757,25 +1899,25 @@ AllPlotWindow::plotPickerMoved(const QPoint &pos)
                 if (pos.x()<6) {
                     posX = 6;
                 } else if (!_plot->bydist && pos.x()>_plot->transform(QwtPlot::xBottom,
-                                        fullPlot->timeArray[fullPlot->timeArray.size()-1])) {
-                    posX = _plot->transform(QwtPlot::xBottom, fullPlot->timeArray[fullPlot->timeArray.size()-1]);
+                                        fullPlot->standard->timeArray[fullPlot->standard->timeArray.size()-1])) {
+                    posX = _plot->transform(QwtPlot::xBottom, fullPlot->standard->timeArray[fullPlot->standard->timeArray.size()-1]);
                 } else if (plot->bydist && pos.x()>_plot->transform(QwtPlot::xBottom,
-                                        fullPlot->distanceArray[fullPlot->distanceArray.size()-1])) {
+                                        fullPlot->standard->distanceArray[fullPlot->standard->distanceArray.size()-1])) {
                     posX = fullPlot->transform(QwtPlot::xBottom,
-                                        fullPlot->distanceArray[fullPlot->distanceArray.size()-1]);
+                                        fullPlot->standard->distanceArray[fullPlot->standard->distanceArray.size()-1]);
                 }
 
                 setEndSelection(_plot, _plot->invTransform(QwtPlot::xBottom, posX), true, name);
 
                 if (plot->y()<_plot->y()) {
-                    plot->allMarker1->setLabel(_plot->allMarker1->label());
-                    plot->allMarker2->setLabel(_plot->allMarker2->label());
+                    plot->standard->allMarker1->setLabel(_plot->standard->allMarker1->label());
+                    plot->standard->allMarker2->setLabel(_plot->standard->allMarker2->label());
                 }
 
             } else {
 
-                _plot->allMarker1->hide();
-                _plot->allMarker2->hide();
+                _plot->standard->allMarker1->hide();
+                _plot->standard->allMarker2->hide();
 
             }
         }
@@ -791,7 +1933,10 @@ AllPlotWindow::plotPickerMoved(const QPoint &pos)
 void
 AllPlotWindow::setStartSelection(AllPlot* plot, double xValue)
 {
-    QwtPlotMarker* allMarker1 = plot->allMarker1;
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
+    QwtPlotMarker* allMarker1 = plot->standard->allMarker1;
 
     selection++;
 
@@ -804,12 +1949,14 @@ AllPlotWindow::setStartSelection(AllPlot* plot, double xValue)
 void
 AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, QString name)
 {
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
     active = true;
 
-    QwtPlotMarker* allMarker1 = plot->allMarker1;
-    QwtPlotMarker* allMarker2 = plot->allMarker2;
+    QwtPlotMarker* allMarker1 = plot->standard->allMarker1;
+    QwtPlotMarker* allMarker2 = plot->standard->allMarker2;
 
-    bool useMetricUnits = plot->useMetricUnits;
     if (!allMarker2->isVisible() || allMarker2->xValue() != xValue) {
         allMarker2->setValue(xValue, plot->bydist ? 0 : 100);
         allMarker2->show();
@@ -839,7 +1986,7 @@ AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, Q
         // if we are in distance mode then x1 and x2 are distances
         // we need to make sure they are in KM for the rest of this
         // code.
-        if (plot->bydist && useMetricUnits == false) {
+        if (plot->bydist && context->athlete->useMetricUnits == false) {
             x1 *= KM_PER_MILE;
             x2 *=  KM_PER_MILE;
         }
@@ -862,15 +2009,15 @@ AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, Q
             }
         }
         QString s("\n%1%2 %3 %4\n%5%6 %7%8 %9%10");
-        s = s.arg(useMetricUnits ? distance2-distance1 : (distance2-distance1)*MILES_PER_KM, 0, 'f', 1);
-        s = s.arg((useMetricUnits? "km":"m"));
+        s = s.arg(context->athlete->useMetricUnits ? distance2-distance1 : (distance2-distance1)*MILES_PER_KM, 0, 'f', 2);
+        s = s.arg((context->athlete->useMetricUnits? "km":"mi"));
         s = s.arg(time_to_string(duration2-duration1));
         if (duration2-duration1-secsMoving>1)
             s = s.arg("("+time_to_string(secsMoving)+")");
         else
             s = s.arg("");
-        s = s.arg((useMetricUnits ? 1 : MILES_PER_KM) * (distance2-distance1)/secsMoving*3600, 0, 'f', 1);
-        s = s.arg((useMetricUnits? "km/h":"m/h"));
+        s = s.arg((context->athlete->useMetricUnits ? 1 : MILES_PER_KM) * (distance2-distance1)/secsMoving*3600, 0, 'f', 1);
+        s = s.arg((context->athlete->useMetricUnits? "km/h":"mph"));
         if (wattsTotal>0) {
             s = s.arg(wattsTotal/arrayLength, 0, 'f', 1);
             s = s.arg("W");
@@ -904,7 +2051,7 @@ AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, Q
 
         if (newInterval) {
 
-            QTreeWidgetItem *allIntervals = mainWindow->mutableIntervalItems();
+            QTreeWidgetItem *allIntervals = context->athlete->mutableIntervalItems();
             int count = allIntervals->childCount();
 
             // are we adjusting an existing interval? - if so delete it and readd it
@@ -913,18 +2060,20 @@ AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, Q
                 if (bottom->text(0).startsWith(name)) delete allIntervals->takeChild(count-1);
             }
 
-            // add average power to the end of the selection name
-            name += QString("(%1 watts)").arg(round((wattsTotal && arrayLength) ? wattsTotal/arrayLength : 0));
+            // add average power to the end of the selection name, if available
+            if (wattsTotal && arrayLength)
+                name += tr("(%1 watts)").arg(round(wattsTotal/arrayLength));
 
             QTreeWidgetItem *last = new IntervalItem(ride->ride(), name, duration1, duration2, distance1, distance2,
                                         allIntervals->childCount()+1);
+            last->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled);
             allIntervals->addChild(last);
 
-            // select this new interval
-            mainWindow->intervalTreeWidget()->setItemSelected(last, true);
+            // select this new interval --WTAF?????? NO! NO! NO!
+            context->athlete->intervalTreeWidget()->setItemSelected(last, true);
 
             // now update the RideFileIntervals and all the plots etc
-            mainWindow->updateRideFileIntervals();
+            context->athlete->updateRideFileIntervals();
         }
     }
     active = false;
@@ -933,45 +2082,65 @@ AllPlotWindow::setEndSelection(AllPlot* plot, double xValue, bool newInterval, Q
 void
 AllPlotWindow::clearSelection()
 {
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
     selection = 0;
-    allPlot->allMarker1->setVisible(false);
-    allPlot->allMarker2->setVisible(false);
+    allPlot->standard->allMarker1->setVisible(false);
+    allPlot->standard->allMarker2->setVisible(false);
 
     foreach (AllPlot *plot, allPlots) {
-        plot->allMarker1->setVisible(false);
-        plot->allMarker2->setVisible(false);
+        plot->standard->allMarker1->setVisible(false);
+        plot->standard->allMarker2->setVisible(false);
     }
 }
 
 void
 AllPlotWindow::hideSelection()
 {
+    // we don't do selection in compare mode
+    if (isCompare()) return;
+
     if (showStack->isChecked()) {
         foreach (AllPlot *plot, allPlots) {
-            plot->allMarker1->setVisible(false);
-            plot->allMarker2->setVisible(false);
+            plot->standard->allMarker1->setVisible(false);
+            plot->standard->allMarker2->setVisible(false);
             plot->replot();
         }
     } else {
         fullPlot->replot();
-        allPlot->allMarker1->setVisible(false);
-        allPlot->allMarker2->setVisible(false);
+        allPlot->standard->allMarker1->setVisible(false);
+        allPlot->standard->allMarker2->setVisible(false);
         allPlot->replot();
     }
 }
 
 void
+AllPlotWindow::setHovering(int value)
+{
+    showHover->setChecked(value);
+}
+
+void
 AllPlotWindow::setShowPower(int value)
 {
+    showPower->setCurrentIndex(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
     // we only show the power shading on the
     // allPlot / stack plots, not on the fullPlot
-    allPlot->showPower(value);
+    allPlot->setShowPower(value);
     if (!showStack->isChecked())
         allPlot->replot();
 
     // redraw
     foreach (AllPlot *plot, allPlots)
-        plot->showPower(value);
+        plot->setShowPower(value);
 
     // now replot 'em - to avoid flicker
     if (showStack->isChecked()) {
@@ -980,81 +2149,914 @@ AllPlotWindow::setShowPower(int value)
             plot->replot();
         stackFrame->setUpdatesEnabled(true); // don't repaint whilst we do this...
     }
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
 }
+
 
 void
 AllPlotWindow::setShowHr(int value)
 {
-    allPlot->showHr(value);
+    showHr->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showHr->isEnabled()) ? true : false;
+
+    allPlot->setShowHr(checked);
     foreach (AllPlot *plot, allPlots)
-        plot->showHr(value);
+        plot->setShowHr(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowNP(int value)
+{
+    showNP->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showNP->isEnabled()) ? true : false;
+
+    // recalc only does it if it needs to
+    if (value && current && current->ride()) current->ride()->recalculateDerivedSeries();
+
+    allPlot->setShowNP(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowNP(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowANTISS(int value)
+{
+    showANTISS->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showANTISS->isEnabled()) ? true : false;
+
+    // recalc only does it if it needs to
+    if (value && current && current->ride()) current->ride()->recalculateDerivedSeries();
+
+    allPlot->setShowANTISS(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowANTISS(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowATISS(int value)
+{
+    showATISS->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showATISS->isEnabled()) ? true : false;
+
+    // recalc only does it if it needs to
+    if (value && current && current->ride()) current->ride()->recalculateDerivedSeries();
+
+    allPlot->setShowATISS(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowATISS(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowXP(int value)
+{
+    showXP->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showXP->isEnabled()) ? true : false;
+
+    // recalc only does it if it needs to
+    if (value && current && current->ride()) current->ride()->recalculateDerivedSeries();
+
+    allPlot->setShowXP(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowXP(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowAP(int value)
+{
+    showAP->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showAP->isEnabled()) ? true : false;
+
+    // recalc only does it if it needs to
+    if (value && current && current->ride()) current->ride()->recalculateDerivedSeries();
+
+    allPlot->setShowAP(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowAP(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
 }
 
 void
 AllPlotWindow::setShowSpeed(int value)
 {
-    allPlot->showSpeed(value);
+    showSpeed->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showSpeed->isEnabled()) ? true : false;
+
+    allPlot->setShowSpeed(checked);
     foreach (AllPlot *plot, allPlots)
-        plot->showSpeed(value);
+        plot->setShowSpeed(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowAccel(int value)
+{
+    showAccel->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showAccel->isEnabled()) ? true : false;
+
+    allPlot->setShowAccel(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowAccel(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowPowerD(int value)
+{
+    showPowerD->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showPowerD->isEnabled()) ? true : false;
+
+    allPlot->setShowPowerD(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowPowerD(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowCadD(int value)
+{
+    showCadD->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showCadD->isEnabled()) ? true : false;
+
+    allPlot->setShowCadD(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowCadD(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowTorqueD(int value)
+{
+    showTorqueD->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showTorqueD->isEnabled()) ? true : false;
+
+    allPlot->setShowTorqueD(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowTorqueD(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowHrD(int value)
+{
+    showHrD->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showHrD->isEnabled()) ? true : false;
+
+    allPlot->setShowHrD(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowHrD(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
 }
 
 void
 AllPlotWindow::setShowCad(int value)
 {
-    allPlot->showCad(value);
+    showCad->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showCad->isEnabled()) ? true : false;
+
+    allPlot->setShowCad(checked);
     foreach (AllPlot *plot, allPlots)
-        plot->showCad(value);
+        plot->setShowCad(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
 }
 
 void
 AllPlotWindow::setShowAlt(int value)
 {
-    allPlot->showAlt(value);
+    showAlt->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showAlt->isEnabled()) ? true : false;
+
+    allPlot->setShowAlt(checked);
     foreach (AllPlot *plot, allPlots)
-        plot->showAlt(value);
+        plot->setShowAlt(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowSlope(int value)
+{
+    showSlope->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showSlope->isEnabled()) ? true : false;
+
+    allPlot->setShowSlope (checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowSlope(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowAltSlope(int value)
+{
+    showAltSlope->setCurrentIndex(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+       allPlot->showAltSlopeState = value;
+       compareChanged();
+       return;
+    }
+
+    allPlot->setShowAltSlope(value);
+
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowAltSlope(value);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+
+
+void
+AllPlotWindow::setShowTemp(int value)
+{
+    showTemp->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showTemp->isEnabled()) ? true : false;
+
+    allPlot->setShowTemp(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowTemp(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowRV(int value)
+{
+    showRV->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showRV->isEnabled()) ? true : false;
+
+    allPlot->setShowRV(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowRV(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowRGCT(int value)
+{
+    showRGCT->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showRGCT->isEnabled()) ? true : false;
+
+    allPlot->setShowRGCT(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowRGCT(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowRCad(int value)
+{
+    showRCad->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showRCad->isEnabled()) ? true : false;
+
+    allPlot->setShowRCad(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowRCad(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowSmO2(int value)
+{
+    showSmO2->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showSmO2->isEnabled()) ? true : false;
+
+    allPlot->setShowSmO2(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowSmO2(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowtHb(int value)
+{
+    showtHb->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showtHb->isEnabled()) ? true : false;
+
+    allPlot->setShowtHb(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowtHb(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowO2Hb(int value)
+{
+    showO2Hb->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showO2Hb->isEnabled()) ? true : false;
+
+    allPlot->setShowO2Hb(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowO2Hb(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowHHb(int value)
+{
+    showHHb->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showHHb->isEnabled()) ? true : false;
+
+    allPlot->setShowHHb(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowHHb(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowGear(int value)
+{
+    showGear->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showGear->isEnabled()) ? true : false;
+
+    allPlot->setShowGear(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowGear(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowWind(int value)
+{
+    showWind->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = (( value == Qt::Checked ) && showWind->isEnabled()) ? true : false;
+
+    allPlot->setShowWind(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowWind(checked);
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowW(int value)
+{
+    showW->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showW->isEnabled()) ? true : false;
+
+    allPlot->setShowW(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowW(checked);
+
+    // refresh W' data if needed
+    if (checked && current && current->ride()) {
+
+        // redraw
+        redrawFullPlot();
+        redrawAllPlot();
+        redrawStackPlot();
+    }
+
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowTorque(int value)
+{
+    showTorque->setChecked(value);
+    bool checked = ( ( value == Qt::Checked ) && showTorque->isEnabled()) ? true : false;
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    allPlot->setShowTorque(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowTorque(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowBalance(int value)
+{
+    showBalance->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showBalance->isEnabled()) ? true : false;
+
+    allPlot->setShowBalance(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowBalance(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+}
+
+void
+AllPlotWindow::setShowPS(int value)
+{
+    showPS->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showPS->isEnabled()) ? true : false;
+
+    allPlot->setShowPS(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowPS(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+
+}
+
+void
+AllPlotWindow::setShowTE(int value)
+{
+    showTE->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showTE->isEnabled()) ? true : false;
+
+    allPlot->setShowTE(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowTE(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+
+}
+
+void
+AllPlotWindow::setShowPCO(int value)
+{
+    showPCO->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showPCO->isEnabled()) ? true : false;
+
+    allPlot->setShowPCO(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowPCO(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+
+}
+
+void
+AllPlotWindow::setShowDC(int value)
+{
+    showDC->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showDC->isEnabled()) ? true : false;
+
+    allPlot->setShowDC(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowDC(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+
+}
+
+void
+AllPlotWindow::setShowPPP(int value)
+{
+    showPPP->setChecked(value);
+
+    // compare mode selfcontained update
+    if (isCompare()) {
+        compareChanged();
+        return;
+    }
+
+    bool checked = ( ( value == Qt::Checked ) && showPPP->isEnabled()) ? true : false;
+
+    allPlot->setShowPPP(checked);
+    foreach (AllPlot *plot, allPlots)
+        plot->setShowPPP(checked);
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
+
+}
+
+void
+AllPlotWindow::setShowHelp(int value)
+{
+    rHelp->setChecked(value);
+    showHelp->setChecked(value);
+    if (showHelp->isChecked()) helperWidget()->show();
+    else helperWidget()->hide();
+}
+
+void
+AllPlotWindow::setShowFull(int value)
+{
+    rFull->setChecked(value);
+    showFull->setChecked(value);
+    if (showFull->isChecked()) {
+        fullPlot->show();
+        allPlotLayout->setStretch(1,20);
+    }
+    else {
+        fullPlot->hide();
+        allPlotLayout->setStretch(1,0);
+    }
+}
+
+void
+AllPlotWindow::setShowInterval(int value)
+{
+    showInterval->setChecked(value);
+    if (showInterval->isChecked()) {
+        intervalPlot->show();
+        //allPlotLayout->setStretch(1,20);
+    }
+    else {
+        intervalPlot->hide();
+        //allPlotLayout->setStretch(1,0);
+    }
 }
 
 void
 AllPlotWindow::setShowGrid(int value)
 {
-    allPlot->showGrid(value);
+    showGrid->setChecked(value);
+
+    if (isCompare()) {
+
+        // XXX 
+        return;
+
+    } else {
+
+        allPlot->setShowGrid(value);
+        foreach (AllPlot *plot, allPlots)
+            plot->setShowGrid(value);
+        // and the series stacks too
+        forceSetupSeriesStackPlots(); // scope changed so force redraw
+    }
+}
+
+void
+AllPlotWindow::setPaintBrush(int value)
+{
+    if (active == true) return;
+
+    if (isCompare()) {
+        // XXX 
+        return;
+    }
+
+    active = true;
+    paintBrush->setChecked(value);
+
+    //if (!current) return;
+
+    allPlot->setPaintBrush(value);
     foreach (AllPlot *plot, allPlots)
-        plot->showGrid(value);
+        plot->setPaintBrush(value);
+
+    active = false;
+    // and the series stacks too
+    forceSetupSeriesStackPlots(); // scope changed so force redraw
 }
 
 void
 AllPlotWindow::setByDistance(int value)
 {
+    if (value <0 || value >1 || active == true) return;
+
+    active = true;
+    comboDistance->setCurrentIndex(value);
+
+    // compare mode is self contained
+    if (isCompare()) {
+        fullPlot->bydist = value;
+        compareChanged();
+        active = false;
+        return;
+    }
+
     fullPlot->setByDistance(value);
+    intervalPlot->setByDistance(value);
     allPlot->setByDistance(value);
 
     // refresh controls, specifically spanSlider
     setAllPlotWidgets(fullPlot->rideItem);
 
     // refresh
+    setupSeriesStack = setupStack = false;
     redrawFullPlot();
     redrawAllPlot();
     setupStackPlots();
+    setupSeriesStackPlots();
+    redrawIntervalPlot();
+
+    active = false;
 }
 
 void
 AllPlotWindow::setSmoothing(int value)
 {
-    // recalculate etc
-    fullPlot->setSmoothing(value);
+    //if (!current) return;
+    smoothSlider->setValue(value);
 
-    // redraw
-    redrawFullPlot();
-    redrawAllPlot();
-    redrawStackPlot();
+    // Compare has LOTS of rides to smooth...
+    if (context->isCompareIntervals) {
+
+        // no zero smoothing when comparing -- we need the
+        // arrays to be initialised for all series
+        if (value < 1) value = 1;
+        fullPlot->setSmoothing(value);
+
+        setUpdatesEnabled(false);
+
+        // smooth each on full plots ...
+        foreach(AllPlotObject *po, compareIntervalCurves) {
+            fullPlot->recalc(po);
+        }
+
+        // .. and all plots too!
+        int i=0;
+        foreach (AllPlot *plot, allComparePlots) {
+            plot->setDataFromObject(compareIntervalCurves[i], allPlot);
+            i++;
+        }
+        // and series plots..
+        foreach (AllPlot *plot, seriesPlots) {
+            plot->setDataFromPlots(allComparePlots);
+            plot->replot(); // straight away this time
+        }
+
+        setUpdatesEnabled(true);
+
+    } else {
+
+        // recalculate etc
+        fullPlot->setSmoothing(value);
+
+        // redraw
+        redrawFullPlot();
+        redrawAllPlot();
+        redrawStackPlot();
+    }
 }
 
+void
+AllPlotWindow::resetSeriesStackedDatas()
+{
+    if (!current) return;
+
+    // just reset from AllPlot
+    foreach(AllPlot *p, seriesPlots) {
+        p->setDataFromPlot(allPlot);
+    }
+}
 //
 // Runs through the stacks and updates their contents
 //
 void
 AllPlotWindow::resetStackedDatas()
 {
+    if (!current) return;
+
     int _stackWidth = stackWidth;
     if (allPlot->bydist)
         _stackWidth = stackWidth/3;
@@ -1065,9 +3067,9 @@ AllPlotWindow::resetStackedDatas()
         int startIndex, stopIndex;
         if (plot->bydist) {
             startIndex = allPlot->rideItem->ride()->distanceIndex(
-                        (allPlot->useMetricUnits ? 1 : KM_PER_MILE) * _stackWidth*i);
+                        (context->athlete->useMetricUnits ? 1 : KM_PER_MILE) * _stackWidth*i);
             stopIndex  = allPlot->rideItem->ride()->distanceIndex(
-                        (allPlot->useMetricUnits ? 1 : KM_PER_MILE) * _stackWidth*(i+1));
+                        (context->athlete->useMetricUnits ? 1 : KM_PER_MILE) * _stackWidth*(i+1));
         } else {
             startIndex = allPlot->rideItem->ride()->timeIndex(60*_stackWidth*i);
             stopIndex  = allPlot->rideItem->ride()->timeIndex(60*_stackWidth*(i+1));
@@ -1080,60 +3082,72 @@ AllPlotWindow::resetStackedDatas()
 
 }
 
-bool
-AllPlotWindow::stackZoomUpShouldEnable(int sw)
+void
+AllPlotWindow::stackZoomSliderChanged()
 {
-    if (!current) return false;
-
-    if (sw >= 200  || sw >= current->ride()->dataPoints().last()->secs/60) {
-        return false;
-    }
-    else {
-        return true;
-    }
-}
-
-bool
-AllPlotWindow::stackZoomDownShouldEnable(int sw)
-{
-    if (sw <= 4) {
-        return false;
-    }
-    else {
-        return true;
-    }
+    // slider moved!
+    setStackWidth(stackZoomWidth[stackZoomSlider->value()]);
 }
 
 void
-AllPlotWindow::setStackZoomUp()
+AllPlotWindow::setStackWidth(int width)
 {
-    if (!current) return;
+    // derive width from allowed values -- this is for backward 
+    // compatibility to ensure we always use a size that we are
+    // expecting and set the slider to the appropriate value
+    int i=0;
+    for (; i<8; i++) // there are 8 pre-set sizes
+        if (width <= stackZoomWidth[i]) break;
 
-    if (stackWidth<200 && stackWidth<current->ride()->dataPoints().last()->secs/60) {
+    // we never found it
+    if (i == 8) i=7;
 
-        stackWidth = ceil(stackWidth * 1.25);
-        setupStackPlots();
-        stackZoomUp->setEnabled(stackZoomUpShouldEnable(stackWidth));
-        stackZoomDown->setEnabled(stackZoomDownShouldEnable(stackWidth));
-    }
-}
+    // did anything actually change?
+    if (stackZoomWidth[i] == stackWidth) return;
 
-void
-AllPlotWindow::setStackZoomDown()
-{
-    if (stackWidth>4) {
+    // set the value and the slider
+    stackWidth = stackZoomWidth[i];
+    stackZoomSlider->setValue(i);
 
-        stackWidth = floor(stackWidth / 1.25);
-        setupStackPlots();
-        stackZoomUp->setEnabled(stackZoomUpShouldEnable(stackWidth));
-        stackZoomDown->setEnabled(stackZoomDownShouldEnable(stackWidth));
-    }
+    resizeSeriesPlots(); // its only the size that needs to change
+                         // no need to replot
+
+    resizeComparePlots();
+
+    // now lets do the plots...
+    setupStack = false; // force resize
+    setupStackPlots();
 }
 
 void
 AllPlotWindow::showStackChanged(int value)
 {
+
+    showStack->setCheckState((Qt::CheckState)value);
+    rStack->setCheckState((Qt::CheckState)value);
+
+    if (isCompare()) {
+        setAllPlotWidgets(NULL); // no need to do anything fancy
+        return;
+    }
+
     if (!current) return;
+
+    // enables / disable as needed
+    if (showStack->isChecked()) {
+        showBySeries->setEnabled(true);
+        rBySeries->setEnabled(true);
+
+        // all plot...
+        allPlotStack->setCurrentIndex(0);
+        if (isCompare()) allStack->setCurrentIndex(1); // compare mode stack of all plots
+        else allStack->setCurrentIndex(0); // normal single allplot
+
+    } else {
+        showBySeries->setEnabled(false);
+        rBySeries->setEnabled(false);
+        allPlotStack->setCurrentIndex(1);
+    }
 
     // when we swap from normal to
     // stacked view, save the mode so
@@ -1143,24 +3157,219 @@ AllPlotWindow::showStackChanged(int value)
     // out of date. Then call setAllPlotWidgets
     // to make sure all the controls are setup
     // and the right widgets are hidden/shown.
-    boost::shared_ptr<QSettings> settings = GetApplicationSettings();
-    settings->setValue(GC_RIDE_PLOT_STACK, value);
-
     if (value) {
-        // refresh plots
-        resetStackedDatas();
 
-        // now they are all set, lets replot them
-        foreach(AllPlot *plot, allPlots) plot->replot();
+        if (!showBySeries->isChecked()) {
+
+            // BY TIME / DISTANCE
+
+            // setup the stack plots if needed
+            setupStackPlots();
+
+            // refresh plots
+            resetStackedDatas();
+
+            // now they are all set, lets replot them
+            foreach(AllPlot *plot, allPlots) plot->replot();
+
+        } else {
+
+            // BY SERIES
+
+            // setup the stack plots if needed
+            setupSeriesStackPlots();
+
+            // refresh plots
+            resetSeriesStackedDatas();
+
+            // now they are all set, lets replot them
+            foreach(AllPlot *plot, seriesPlots) plot->replot();
+
+        }
 
     } else {
         // refresh plots
         redrawAllPlot();
-
     }
 
     // reset the view
     setAllPlotWidgets(current);
+}
+
+void
+AllPlotWindow::showBySeriesChanged(int value)
+{
+    if (!current) return;
+
+    showBySeries->setCheckState((Qt::CheckState)value);
+    rBySeries->setCheckState((Qt::CheckState)value);
+    showStackChanged(showStack->checkState()); // force replot etc
+}
+
+void
+AllPlotWindow::forceSetupSeriesStackPlots()
+{
+    setupSeriesStack = false;
+    setupSeriesStackPlots();
+}
+
+void
+AllPlotWindow::resizeSeriesPlots()
+{
+    // calling setupdates enabled when its disabled
+    // causes all paint events to be flushed. We want
+    // to avoid that, since it causes a flicker.
+    bool update = seriesstackFrame->updatesEnabled();
+
+    if (update) seriesstackFrame->setUpdatesEnabled(false);
+    foreach (AllPlot *plot, seriesPlots)
+        plot->setFixedHeight(120 + (stackWidth *4));
+    if (update) seriesstackFrame->setUpdatesEnabled(true);
+}
+
+void
+AllPlotWindow::resizeComparePlots()
+{
+    comparePlotFrame->setUpdatesEnabled(false);
+    foreach (AllPlot *plot, allComparePlots)
+        plot->setFixedHeight(120 + (stackWidth *4));
+    comparePlotFrame->setUpdatesEnabled(true);
+}
+
+void
+AllPlotWindow::setupSeriesStackPlots()
+{
+    if (!isCompare() && (!showStack->isChecked() || !showBySeries->isChecked() || setupSeriesStack)) return;
+
+    QVBoxLayout *newLayout = new QVBoxLayout;
+
+    // this is NOT a memory leak (see ZZZ below)
+    seriesPlots.clear();
+
+    bool addHeadwind = false;
+    RideItem* rideItem = current;
+    if (!rideItem || !rideItem->ride() || rideItem->ride()->dataPoints().isEmpty()) return;
+
+    // the refresh takes a while and is prone
+    // to lots of flicker, we turn off updates
+    // whilst we switch from the old to the new
+    // stackWidget and plots
+    seriesstackFrame->setUpdatesEnabled(false);
+
+    QPalette palette;
+    palette.setBrush(QPalette::Background, Qt::NoBrush);
+
+    QList<SeriesWanted> serieslist;
+    SeriesWanted s;
+    // lets get a list of what we need to plot -- plot is same order as options in settings
+    if (showPower->currentIndex() < 2 && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::watts; s.two = RideFile::none; serieslist << s; }
+    if (showPowerD->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::wattsd;s.two = RideFile::none; serieslist << s; }
+    if (showHr->isChecked() && rideItem->ride()->areDataPresent()->hr) { s.one = RideFile::hr; s.two = RideFile::none; serieslist << s; }
+    if (showHrD->isChecked() && rideItem->ride()->areDataPresent()->hr) { s.one = RideFile::hrd; s.two = RideFile::none; serieslist << s; }
+    if (showSmO2->isChecked() && rideItem->ride()->areDataPresent()->smo2) { s.one = RideFile::smo2; s.two = RideFile::none; serieslist << s; }
+    if (showtHb->isChecked() && rideItem->ride()->areDataPresent()->thb) { s.one = RideFile::thb; s.two = RideFile::none; serieslist << s; }
+    if (showO2Hb->isChecked() && rideItem->ride()->areDataPresent()->o2hb) { s.one = RideFile::o2hb; s.two = RideFile::none; serieslist << s; }
+    if (showHHb->isChecked() && rideItem->ride()->areDataPresent()->hhb) { s.one = RideFile::hhb; s.two = RideFile::none; serieslist << s; }
+    if (showWind->isChecked() && rideItem->ride()->areDataPresent()->headwind) addHeadwind=true; //serieslist << RideFile::headwind;
+    if (showSpeed->isChecked() && rideItem->ride()->areDataPresent()->kph) {s.one = RideFile::kph; s.two = (addHeadwind ? RideFile::headwind : RideFile::none); serieslist << s; }
+    if (showAccel->isChecked() && rideItem->ride()->areDataPresent()->kph) { s.one = RideFile::kphd; s.two = RideFile::none; serieslist << s; }
+    if (showCad->isChecked() && rideItem->ride()->areDataPresent()->cad) { s.one = RideFile::cad; s.two = RideFile::none; serieslist << s; }
+    if (showCadD->isChecked() && rideItem->ride()->areDataPresent()->cad) { s.one = RideFile::cadd; s.two = RideFile::none; serieslist << s; }
+    if (showTorque->isChecked() && rideItem->ride()->areDataPresent()->nm) { s.one = RideFile::nm; s.two = RideFile::none; serieslist << s; }
+    if (showTorqueD->isChecked() && rideItem->ride()->areDataPresent()->nm) { s.one = RideFile::nmd; s.two = RideFile::none; serieslist << s; }
+    if (showAlt->isChecked() && rideItem->ride()->areDataPresent()->alt) { s.one = RideFile::alt; s.two = RideFile::none; serieslist << s; }
+    if (showAltSlope->currentIndex() > 0 && rideItem->ride()->areDataPresent()->alt) { s.one = RideFile::alt; s.two = RideFile::slope; serieslist << s; }
+    if (showSlope->isChecked() && rideItem->ride()->areDataPresent()->slope) { s.one = RideFile::slope; s.two = RideFile::none; serieslist << s; }
+    if (showTemp->isChecked() && rideItem->ride()->areDataPresent()->temp) { s.one = RideFile::temp; s.two = RideFile::none; serieslist << s; } 
+    if (showNP->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::NP; s.two = RideFile::none; serieslist << s; }
+    if (showRV->isChecked() && rideItem->ride()->areDataPresent()->rvert) { s.one = RideFile::rvert; s.two = RideFile::none; serieslist << s; }
+    if (showRCad->isChecked() && rideItem->ride()->areDataPresent()->rcad) { s.one = RideFile::rcad; s.two = RideFile::none; serieslist << s; }
+    if (showRGCT->isChecked() && rideItem->ride()->areDataPresent()->rcontact) { s.one = RideFile::rcontact; s.two = RideFile::none; serieslist << s; }
+    if (showGear->isChecked() && rideItem->ride()->areDataPresent()->gear) { s.one = RideFile::gear; s.two = RideFile::none; serieslist << s; }
+    if (showATISS->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::aTISS; s.two = RideFile::none; serieslist << s; }
+    if (showANTISS->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::anTISS; s.two = RideFile::none; serieslist << s; }
+    if (showXP->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::xPower; s.two = RideFile::none; serieslist << s; }
+    if (showAP->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::aPower; s.two = RideFile::none; serieslist << s; }
+    if (showW->isChecked() && rideItem->ride()->areDataPresent()->watts) { s.one = RideFile::wprime; s.two = RideFile::none; serieslist << s; }
+    if (showBalance->isChecked() && rideItem->ride()->areDataPresent()->lrbalance) { s.one = RideFile::lrbalance; s.two = RideFile::none; serieslist << s; }
+    if (showTE->isChecked() && rideItem->ride()->areDataPresent()->lte) { s.one = RideFile::lte; s.two = RideFile::none; serieslist << s;
+         s.one = RideFile::rte; s.two = RideFile::none; serieslist << s; }
+    if (showPS->isChecked() && rideItem->ride()->areDataPresent()->lps) { s.one = RideFile::lps; s.two = RideFile::none; serieslist << s;
+         s.one = RideFile::rps; s.two = RideFile::none; serieslist << s; }
+    if (showPCO->isChecked() && rideItem->ride()->areDataPresent()->lpco) { s.one = RideFile::lpco; s.two = RideFile::rpco; serieslist << s;}
+    if (showDC->isChecked() && rideItem->ride()->areDataPresent()->lppb) { s.one = RideFile::lppb; s.two = RideFile::lppe; serieslist << s;
+         s.one = RideFile::rppb; s.two = RideFile::rppe; serieslist << s; }
+    if (showPPP->isChecked() && rideItem->ride()->areDataPresent()->lpppb) { s.one = RideFile::lpppb; s.two = RideFile::lpppe; serieslist << s;
+         s.one = RideFile::rpppb; s.two = RideFile::rpppe; serieslist << s; }
+
+    bool first = true;
+    foreach(SeriesWanted x, serieslist) {
+
+        // create that plot
+        AllPlot *_allPlot = new AllPlot(this, this, context, x.one, x.two, first);
+        _allPlot->setAutoFillBackground(false);
+        _allPlot->setPalette(palette);
+        _allPlot->setPaintBrush(paintBrush->checkState());
+        _allPlot->setDataFromPlot(allPlot); // will clone all settings and data for the series
+                                                   // being plotted, only works for one series plotting
+
+        if (x.one == RideFile::watts) _allPlot->setShadeZones(showPower->currentIndex() == 0);
+        else _allPlot->setShadeZones(false);
+        first = false;
+
+        // add to the list
+        seriesPlots.append(_allPlot);
+        addPickers(_allPlot);
+        newLayout->addWidget(_allPlot);
+        _allPlot->setFixedHeight(120+(stackWidth*4));
+
+        // No x axis titles
+        _allPlot->setAxisVisible(QwtPlot::xBottom, true);
+        _allPlot->enableAxis(QwtPlot::xBottom, true);
+        _allPlot->setAxisTitle(QwtPlot::xBottom,NULL);
+        _allPlot->setAxisMaxMinor(QwtPlot::xBottom, 0);
+        _allPlot->setAxisMaxMinor(QwtPlot::yLeft, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yLeft,1), 0);
+        _allPlot->setAxisMaxMinor(QwtPlot::yRight, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yRight,2).id, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yRight,3).id, 0);
+
+        // controls
+	    _allPlot->replot();
+    }
+
+    newLayout->addStretch();
+
+    // lets make sure the size matches the user preferences
+    resizeSeriesPlots(); // << checks if updates enabled and doesn't reenable
+
+    // set new widgets
+    QPalette old = seriesstackWidget->palette();
+    seriesstackWidget = new QWidget(this);
+    seriesstackWidget->setPalette(old);
+    seriesstackWidget->setAutoFillBackground(false);
+    seriesstackWidget->setLayout(newLayout);
+    seriesstackFrame->setWidget(seriesstackWidget);
+
+    // lets remember the layout
+    seriesstackPlotLayout = newLayout;
+
+    // ZZZZ zap old widgets - is NOT required
+    //                        since setWidget above will destroy
+    //                        the ScrollArea's children
+    // not neccessary --> foreach (AllPlot *plot, oldPlots) delete plot;
+    // not neccessary --> delete stackPlotLayout;
+    // not neccessary --> delete stackWidget;
+
+    // we are now happy for a screen refresh to take place
+    seriesstackFrame->setUpdatesEnabled(true);
+
+#if 0
+    // first lets wipe out the current plots
+    // since we cache out above we need to
+    // track and manage via below
+#endif
+    setupSeriesStack = true; // we're clean
 }
 
 void
@@ -1173,6 +3382,11 @@ AllPlotWindow::setupStackPlots()
     // with a new one. This is to avoid some
     // nasty flickers and simplifies the code
     // for refreshing.
+    if (!showStack->isChecked() || showBySeries->isChecked() || setupStack) return;
+
+    // since we cache out above we need to
+    // track and manage via below
+    setupStack = true;
 
     // ************************************
     // EDIT WITH CAUTION -- THIS HAS BEEN
@@ -1194,7 +3408,7 @@ AllPlotWindow::setupStackPlots()
     if (!rideItem || !rideItem->ride() || rideItem->ride()->dataPoints().isEmpty()) return;
 
     double duration = rideItem->ride()->dataPoints().last()->secs;
-    double distance =  (fullPlot->useMetricUnits ? 1 : MILES_PER_KM) * rideItem->ride()->dataPoints().last()->km;
+    double distance =  (context->athlete->useMetricUnits ? 1 : MILES_PER_KM) * rideItem->ride()->dataPoints().last()->km;
     int nbplot;
 
     if (fullPlot->bydist)
@@ -1202,14 +3416,17 @@ AllPlotWindow::setupStackPlots()
     else
         nbplot = (int)floor(duration/_stackWidth/60)+1;
 
+    QPalette palette;
+    palette.setBrush(QPalette::Background, Qt::NoBrush);
+
     for(int i = 0 ; i < nbplot ; i++) {
 
         // calculate the segment of ride this stack plot contains
         int startIndex, stopIndex;
         if (fullPlot->bydist) {
-            startIndex = fullPlot->rideItem->ride()->distanceIndex((fullPlot->useMetricUnits ?
+            startIndex = fullPlot->rideItem->ride()->distanceIndex((context->athlete->useMetricUnits ?
                             1 : KM_PER_MILE) * _stackWidth*i);
-            stopIndex  = fullPlot->rideItem->ride()->distanceIndex((fullPlot->useMetricUnits ?
+            stopIndex  = fullPlot->rideItem->ride()->distanceIndex((context->athlete->useMetricUnits ?
                             1 : KM_PER_MILE) * _stackWidth*(i+1));
         } else {
             startIndex = fullPlot->rideItem->ride()->timeIndex(60*_stackWidth*i);
@@ -1220,7 +3437,10 @@ AllPlotWindow::setupStackPlots()
         if (stopIndex - startIndex < 2) break;
 
         // create that plot
-        AllPlot *_allPlot = new AllPlot(this, mainWindow);
+        AllPlot *_allPlot = new AllPlot(this, this, context);
+        _allPlot->setAutoFillBackground(false);
+        _allPlot->setPalette(palette);
+        _allPlot->setPaintBrush(paintBrush->checkState());
 
         // add to the list
         allPlots.append(_allPlot);
@@ -1231,37 +3451,59 @@ AllPlotWindow::setupStackPlots()
         _allPlot->setDataFromPlot(fullPlot, startIndex, stopIndex);
         _allPlot->setAxisScale(QwtPlot::xBottom, _stackWidth*i, _stackWidth*(i+1), 15/stackWidth);
 
-        if (i==0){
-            // First plot view title and legend
-            _allPlot->setTitle(allPlot->title());
-            _allPlot->plotLayout()->setLegendPosition(QwtPlot::TopLegend);
-            _allPlot->setFixedHeight(120+stackWidth*2+50);
-        }
-        else {
-           _allPlot->setTitle("");
-           _allPlot->insertLegend(NULL);
-           _allPlot->setFixedHeight(120+stackWidth*2);
-        }
+        _allPlot->setFixedHeight(120+stackWidth*4);
 
         // No x axis titles
+        _allPlot->setAxisVisible(QwtPlot::xBottom, true);
+        _allPlot->enableAxis(QwtPlot::xBottom, true);
         _allPlot->setAxisTitle(QwtPlot::xBottom,NULL);
-        // Smaller y axis Titles
-        QFont axisFont = QFont("Helvetica",10, QFont::Normal);
-        QwtText text = _allPlot->axisTitle(QwtPlot::yLeft);
-        text.setFont(axisFont);
-        _allPlot->setAxisTitle(QwtPlot::yLeft,text);
-        text = _allPlot->axisTitle(QwtPlot::yLeft2);
-        text.setFont(axisFont);
-        _allPlot->setAxisTitle(QwtPlot::yLeft2,text);
-        text = _allPlot->axisTitle(QwtPlot::yRight);
-        text.setFont(axisFont);
-        _allPlot->setAxisTitle(QwtPlot::yRight,text);
-        text = _allPlot->axisTitle(QwtPlot::yRight2);
-        text.setFont(axisFont);
-        _allPlot->setAxisTitle(QwtPlot::yRight2,text);
+        _allPlot->setAxisMaxMinor(QwtPlot::xBottom, 0);
+        _allPlot->setAxisMaxMinor(QwtPlot::yLeft, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yLeft,1), 0);
+        _allPlot->setAxisMaxMinor(QwtPlot::yRight, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yRight,2).id, 0);
+        _allPlot->setAxisMaxMinor(QwtAxisId(QwtAxis::yRight,3).id, 0);
 
+        // controls
         _allPlot->setShadeZones(showPower->currentIndex() == 0);
-        // XXX todo - set the showHR, showCad stuff too...
+        _allPlot->setShowPower(showPower->currentIndex());
+        _allPlot->setShowHr( (showHr->isEnabled()) ? ( showHr->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowSpeed((showSpeed->isEnabled()) ? ( showSpeed->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowAccel((showAccel->isEnabled()) ? ( showAccel->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowPowerD((showPowerD->isEnabled()) ? ( showPowerD->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowCadD((showCadD->isEnabled()) ? ( showCadD->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowTorqueD((showTorqueD->isEnabled()) ? ( showTorqueD->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowHrD((showHrD->isEnabled()) ? ( showHrD->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowCad((showCad->isEnabled()) ? ( showCad->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowAlt((showAlt->isEnabled()) ? ( showAlt->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowSlope((showSlope->isEnabled()) ? ( showSlope->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowAltSlope(showAltSlope->currentIndex());
+        _allPlot->setShowTemp((showTemp->isEnabled()) ? ( showTemp->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowTorque((showTorque->isEnabled()) ? ( showTorque->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowW((showW->isEnabled()) ? ( showW->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowATISS((showATISS->isEnabled()) ? ( showATISS->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowANTISS((showANTISS->isEnabled()) ? ( showANTISS->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowGrid(showGrid->checkState() == Qt::Checked);
+        _allPlot->setPaintBrush(paintBrush->checkState());
+        _allPlot->setSmoothing(smoothSlider->value());
+        _allPlot->setByDistance(comboDistance->currentIndex());
+        _allPlot->setShowBalance((showBalance->isEnabled()) ? ( showBalance->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowNP((showNP->isEnabled()) ? ( showNP->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowRV((showRV->isEnabled()) ? ( showRV->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowRCad((showRCad->isEnabled()) ? ( showRCad->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowRGCT((showRGCT->isEnabled()) ? ( showRGCT->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowGear((showGear->isEnabled()) ? ( showGear->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowSmO2((showSmO2->isEnabled()) ? ( showSmO2->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowtHb((showtHb->isEnabled()) ? ( showtHb->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowO2Hb((showO2Hb->isEnabled()) ? ( showO2Hb->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowHHb((showHHb->isEnabled()) ? ( showHHb->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowXP((showXP->isEnabled()) ? ( showXP->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowAP((showAP->isEnabled()) ? ( showAP->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowTE((showTE->isEnabled()) ? ( showTE->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowPS((showPS->isEnabled()) ? ( showPS->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowPCO((showPCO->isEnabled()) ? ( showPCO->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowDC((showDC->isEnabled()) ? ( showDC->checkState() == Qt::Checked ) : false );
+        _allPlot->setShowPPP((showPPP->isEnabled()) ? ( showPPP->checkState() == Qt::Checked ) : false );
 
 	    _allPlot->replot();
     }
@@ -1274,7 +3516,10 @@ AllPlotWindow::setupStackPlots()
     stackFrame->setUpdatesEnabled(false);
 
     // set new widgets
-    QWidget *stackWidget = new QWidget;
+    QPalette old = stackWidget->palette();
+    stackWidget = new QWidget(this);
+    stackWidget->setPalette(old);
+    stackWidget->setAutoFillBackground(false);
     stackWidget->setLayout(newLayout);
     stackFrame->setWidget(stackWidget);
 
@@ -1297,24 +3542,22 @@ AllPlotWindow::addPickers(AllPlot *_allPlot)
     allMarker1->setLineStyle(QwtPlotMarker::VLine);
     allMarker1->attach(_allPlot);
     allMarker1->setLabelAlignment(Qt::AlignTop|Qt::AlignRight);
-    _allPlot->allMarker1 = allMarker1;
+    _allPlot->standard->allMarker1 = allMarker1;
 
     QwtPlotMarker* allMarker2 = new QwtPlotMarker();
     allMarker2->setLineStyle(QwtPlotMarker::VLine);
     allMarker2->attach(_allPlot);
     allMarker2->setLabelAlignment(Qt::AlignTop|Qt::AlignRight);
-    _allPlot->allMarker2 = allMarker2;
+    _allPlot->standard->allMarker2 = allMarker2;
 
     // use the tooltip picker rather than a standard picker
-    _allPlot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtPlot::yLeft,
-                               QwtPicker::PointSelection,
+    _allPlot->tooltip = new LTMToolTip(QwtPlot::xBottom, QwtAxisId(QwtAxis::yLeft, 2).id,
                                QwtPicker::VLineRubberBand,
                                QwtPicker::AlwaysOn,
                                _allPlot->canvas(),
                                "");
-    _allPlot->tooltip->setSelectionFlags(QwtPicker::PointSelection | QwtPicker::RectSelection | QwtPicker::DragSelection);
     _allPlot->tooltip->setRubberBand(QwtPicker::VLineRubberBand);
-    _allPlot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton, Qt::ShiftModifier);
+    _allPlot->tooltip->setMousePattern(QwtEventPattern::MouseSelect1, Qt::LeftButton);
     _allPlot->tooltip->setTrackerPen(QColor(Qt::black));
     QColor inv(Qt::white);
     inv.setAlpha(0);
@@ -1322,6 +3565,7 @@ AllPlotWindow::addPickers(AllPlot *_allPlot)
     _allPlot->tooltip->setEnabled(true);
 
     _allPlot->_canvasPicker = new LTMCanvasPicker(_allPlot);
+    connect(context, SIGNAL(intervalHover(RideFileInterval)), _allPlot, SLOT(intervalHover(RideFileInterval)));
     connect(_allPlot->_canvasPicker, SIGNAL(pointHover(QwtPlotCurve*, int)), _allPlot, SLOT(pointHover(QwtPlotCurve*, int)));
     connect(_allPlot->tooltip, SIGNAL(moved(const QPoint &)), this, SLOT(plotPickerMoved(const QPoint &)));
     connect(_allPlot->tooltip, SIGNAL(appended(const QPoint &)), this, SLOT(plotPickerSelected(const QPoint &)));

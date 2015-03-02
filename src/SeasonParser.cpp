@@ -19,12 +19,17 @@
 #include "SeasonParser.h"
 #include <QDate>
 #include <QDebug>
-#include <assert.h>
+#include <QMessageBox>
+
+static inline QString unquote(QString quoted)
+{
+    return quoted.mid(1,quoted.length()-2);
+}
 
 bool SeasonParser::startDocument()
 {
     buffer.clear();
-    return TRUE;
+    return true;
 }
 
 bool SeasonParser::endElement( const QString&, const QString&, const QString &qName )
@@ -37,32 +42,57 @@ bool SeasonParser::endElement( const QString&, const QString&, const QString &qN
         season.setEnd(seasonDateToDate(buffer.trimmed()));
     else if (qName == "type")
         season.setType(buffer.trimmed().toInt());
-    else if(qName == "season")
-    {
+    else if (qName == "id")
+        season.setId(QUuid(buffer.trimmed()));
+    else if (qName == "load") {
+        season.load().resize(loadcount+1);
+        season.load()[loadcount] = buffer.trimmed().toInt();
+        loadcount++;
+    } else if (qName == "low") {
+        season.setLow(buffer.trimmed().toInt());
+    } else if (qName == "seed") {
+        season.setSeed(buffer.trimmed().toInt());
+    } else if (qName == "event") {
+
+        season.events.append(SeasonEvent(unquote(buffer.trimmed()), seasonDateToDate(dateString)));
+
+    } else if(qName == "season") {
+
         if(seasons.size() >= 1) {
             // only set end date for previous season if
             // it is not null
             if (seasons[seasons.size()-1].getEnd() == QDate())
                 seasons[seasons.size()-1].setEnd(season.getStart());
         }
-        seasons.append(season);
+        if (season.getStart().isValid() && season.getEnd().isValid()) {
+            seasons.append(season);
+        }
     }
-    return TRUE;
+    return true;
 }
 
-bool SeasonParser::startElement( const QString&, const QString&, const QString &name, const QXmlAttributes & )
+bool SeasonParser::startElement( const QString&, const QString&, const QString &name, const QXmlAttributes &attrs )
 {
     buffer.clear();
-    if(name == "season")
+    if(name == "season") {
         season = Season();
+        loadcount = 0;
+    }
 
-    return TRUE;
+    if (name == "event") {
+
+        for(int i=0; i<attrs.count(); i++) {
+            if (attrs.qName(i) == "date") dateString=attrs.value(i);
+        }
+    }
+
+    return true;
 }
 
 bool SeasonParser::characters( const QString& str )
 {
     buffer += str;
-    return TRUE;
+    return true;
 }
 
 QList<Season> SeasonParser::getSeasons()
@@ -74,7 +104,6 @@ QDate SeasonParser::seasonDateToDate(QString seasonDate)
 {
     QRegExp rx(".*([0-9][0-9][0-9][0-9])-([0-9][0-9])-([0-9][0-9]$)");
         if (rx.exactMatch(seasonDate)) {
-            assert(rx.numCaptures() == 3);
             QDate date = QDate(
                                rx.cap(1).toInt(),
                                rx.cap(2).toInt(),
@@ -97,7 +126,7 @@ bool SeasonParser::endDocument()
         if (seasons[seasons.size()-1].getEnd() == QDate())
             seasons[seasons.size()-1].setEnd(QDate::currentDate().addYears(10));
     }
-    return TRUE;
+    return true;
 }
 
 bool
@@ -105,9 +134,17 @@ SeasonParser::serialize(QString filename, QList<Season>Seasons)
 {
     // open file - truncate contents
     QFile file(filename);
-    file.open(QFile::WriteOnly);
+    if (!file.open(QFile::WriteOnly)) {
+        QMessageBox msgBox;
+        msgBox.setIcon(QMessageBox::Critical);
+        msgBox.setText(QObject::tr("Problem Saving Seasons"));
+        msgBox.setInformativeText(QObject::tr("File: %1 cannot be opened for 'Writing'. Please check file properties.").arg(filename));
+        msgBox.exec();
+        return false;
+    };
     file.resize(0);
     QTextStream out(&file);
+    out.setCodec("UTF-8");
 
     // begin document
     out << "<seasons>\n";
@@ -115,16 +152,36 @@ SeasonParser::serialize(QString filename, QList<Season>Seasons)
     // write out to file
     foreach (Season season, Seasons) {
         if (season.getType() != Season::temporary) {
+
+            // main attributes
             out<<QString("\t<season>\n"
                   "\t\t<name>%1</name>\n"
                   "\t\t<startdate>%2</startdate>\n"
                   "\t\t<enddate>%3</enddate>\n"
                   "\t\t<type>%4</type>\n"
-                  "\t</season>\n")
-            .arg(season.getName())
-            .arg(season.getStart().toString("yyyy-MM-dd"))
-            .arg(season.getEnd().toString("yyyy-MM-dd"))
-            .arg(season.getType());
+                  "\t\t<id>%5</id>\n"
+                  "\t\t<seed>%6</seed>\n"
+                  "\t\t<low>%7</low>\n") .arg(season.getName())
+                                           .arg(season.getStart().toString("yyyy-MM-dd"))
+                                           .arg(season.getEnd().toString("yyyy-MM-dd"))
+                                           .arg(season.getType())
+                                           .arg(season.id().toString())
+                                           .arg(season.getSeed())
+                                           .arg(season.getLow());
+                                    
+
+            // load profile
+            for (int i=9; i<season.load().count(); i++)
+                out <<QString("\t<load>%1</load>\n").arg(season.load()[i]);
+
+            foreach(SeasonEvent x, season.events) {
+
+                out<<QString("\t\t<event date=\"%1\">\"%2\"</event>")
+                            .arg(x.date.toString("yyyy-MM-dd"))
+                            .arg(x.name);
+            
+            }
+            out <<QString("\t</season>\n");
         }
     }
 

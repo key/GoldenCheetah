@@ -21,19 +21,28 @@
 
 #ifndef _GC_DeviceTypes_h
 #define _GC_DeviceTypes_h 1
+#include "GoldenCheetah.h"
 
 #include <QList>
 
 #define DEV_PT         0x0001
 #define DEV_SRM        0x0002
 #define DEV_CT         0x0010
-#define DEV_ANTPLUS    0x0020
+#define DEV_ANTPLUS    0x0020   // Quarqd ANT+ device
+#define DEV_NULL       0x0040
+#define DEV_ANTLOCAL   0x0080   // Local ANT+ device
 #define DEV_GSERVER    0x0100   // NOT IMPLEMENTED IN THIS RELEASE XXX
 #define DEV_GCLIENT    0x0200   // NOT IMPLEMENTED IN THIS RELEASE XXX
+#define DEV_FORTIUS    0x0800   // Tacx Fortius
+#define DEV_KICKR      0x1000   // Wahoo Kickr
+#define DEV_BT40       0x2000   // Wahoo Kickr
 
-#define DEV_ANT        0x01     // ants use id:hostname:port
+#define DEV_QUARQ      0x01     // ants use id:hostname:port
 #define DEV_SERIAL     0x02     // use filename COMx or /dev/cuxxxx
 #define DEV_TCP        0x03     // tcp port is hostname:port NOT IMPLEMENTED IN THIS RELEASE
+#define DEV_USB        0x04     // use filename COMx or /dev/cuxxxx
+#define DEV_LIBUSB     0x08     // will interact directly (i.e. no device file needed)
+#define DEV_BTLE       0x10     // bluetooth
 
 class DeviceType
 {
@@ -43,10 +52,14 @@ class DeviceType
     char *name;         // narrative name
     bool realtime;      // can it do realtime
     bool download;      // can it do download?
+    QString description; // tell me about it
+    QString image;      // filename for image
 };
 
 class DeviceTypes
 {
+    Q_DECLARE_TR_FUNCTIONS(DeviceTypes)
+
     public:
         DeviceTypes();
         ~DeviceTypes();

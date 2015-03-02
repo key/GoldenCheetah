@@ -3,6 +3,7 @@
 
 #ifndef GC_LTMCanvasPicker_H
 #define GC_LTMCanvasPicker_H 1
+#include "GoldenCheetah.h"
 
 #include <qobject.h>
 
@@ -10,10 +11,13 @@ class QPoint;
 class QCustomEvent;
 class QwtPlot;
 class QwtPlotCurve;
+class QwtPlotCanvas;
 
 class LTMCanvasPicker: public QObject
 {
     Q_OBJECT
+    G_OBJECT
+
 public:
     LTMCanvasPicker(QwtPlot *plot);
     virtual bool eventFilter(QObject *, QEvent *);
@@ -24,6 +28,7 @@ signals:
     void pointHover(QwtPlotCurve *, int);
 
 private:
+    QwtPlotCanvas *canvas;
     void select(const QPoint &, bool);
     QwtPlot *plot() { return (QwtPlot *)parent(); }
     const QwtPlot *plot() const { return (QwtPlot *)parent(); }

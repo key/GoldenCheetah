@@ -18,6 +18,7 @@
 
 #ifndef _HrZones_h
 #define _HrZones_h
+#include "GoldenCheetah.h"
 
 #include <QtCore>
 
@@ -82,6 +83,8 @@ struct HrZoneRange {
 class HrZones : public QObject
 {
     Q_OBJECT
+    G_OBJECT
+
 
     private:
 
@@ -171,6 +174,7 @@ class HrZones : public QObject
         int whichRange(const QDate &date) const;
 
         // which zone is the power value in for a given range
+        // will return -1 if not in any zone
         int whichZone(int range, double value) const;
 
         // how many zones are there for a given range
@@ -181,7 +185,7 @@ class HrZones : public QObject
                       QString &name, QString &description,
                       int &low, int &high, double &trimp) const;
 
-        QString summarize(int rnum, QVector<double> &time_in_zone) const;
+        QString summarize(int rnum, QVector<double> &time_in_zone, QColor color = QColor(Qt::darkGray)) const;
 
         // get all highs/lows for zones (plot shading uses these)
         int lowsFromLT(QList <int> *lows, int LT) const;
@@ -204,7 +208,12 @@ class HrZones : public QObject
         // calculate a CRC for the zones data - used to see if zones
         // data is changed since last referenced in Metric code
         // could also be used in Configuration pages (later)
-        unsigned long getFingerprint() const;
+        quint16 getFingerprint() const;
+
+        // this is the fingerprint for a specific DATE so that we
+        // can be more granular -- did the zone config for the date of
+        // a particular ride change ?
+        quint16 getFingerprint(QDate date) const;
 };
 
 QColor hrZoneColor(int zone, int num_zones);

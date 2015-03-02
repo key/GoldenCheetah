@@ -19,6 +19,7 @@
 
 #ifndef _GC_ZoneScaleDraw_h
 #define _GC_ZoneScaleDraw_h 1
+#include "GoldenCheetah.h"
 
 #include <qwt_scale_draw.h>
 #include "Zones.h"
@@ -29,6 +30,7 @@ class ZoneScaleDraw: public QwtScaleDraw
     public:
         ZoneScaleDraw(const Zones *zones, int range=-1) : zones(zones) {
             setRange(range);
+            setTickLength(QwtScaleDiv::MajorTick, 3);
         }
 
         // modify later if neccessary
@@ -73,11 +75,35 @@ class ZoneScaleDraw: public QwtScaleDraw
         QList <int> from, to;
 };
 
+class PolarisedZoneScaleDraw: public QwtScaleDraw
+{
+    public:
+        PolarisedZoneScaleDraw() {
+            setTickLength(QwtScaleDiv::MajorTick, 3);
+
+            labels << "I"; // translate tr macros !?
+            labels << "II";
+            labels << "III";
+        }
+
+        // return label
+        virtual QwtText label(double v) const
+        {
+            int index = v;
+            if (index < 0 || index > labels.count()-1) return QString("");
+            return labels.at(index);
+        }
+
+    private:
+        QList <QString> labels;
+};
+
 class HrZoneScaleDraw: public QwtScaleDraw
 {
     public:
         HrZoneScaleDraw(const HrZones *zones, int range=-1) : zones(zones) {
             setRange(range);
+            setTickLength(QwtScaleDiv::MajorTick, 3);
         }
 
         // modify later if neccessary
@@ -120,6 +146,57 @@ class HrZoneScaleDraw: public QwtScaleDraw
         int range;
         QList<QString> names;
         QList <int> from, to;
+
+};
+
+class PaceZoneScaleDraw: public QwtScaleDraw
+{
+    public:
+        PaceZoneScaleDraw(const PaceZones *zones, int range=-1) : zones(zones) {
+            setRange(range);
+            setTickLength(QwtScaleDiv::MajorTick, 3);
+        }
+
+        // modify later if neccessary
+        void setPaceZones(PaceZones *z) {
+            zones=z;
+            names.clear();
+            from.clear();
+            to.clear();
+        }
+
+        // when we set the range we are choosing the texts
+        void setRange(int x) {
+            range=x;
+            if (range >= 0) {
+                names = zones->getZoneNames(range);
+                from = zones->getZoneLows(range);
+                to = zones->getZoneHighs(range);
+            } else {
+                names.clear();
+                from.clear();
+                to.clear();
+            }
+        }
+
+        // return label
+        virtual QwtText label(double v) const
+        {
+            if (v < 0 || v > (names.count()-1) || range < 0) return QString("");
+            else {
+                return names[v];
+#if 0
+                if (v == names.count()-1) return QString("%1\n%2kph+").arg(names[v]).arg(from[v]);
+                else return QString("%1\n%2-%3kph").arg(names[v]).arg(from[v]).arg(to[v]);
+#endif
+            }
+        }
+
+    private:
+        const PaceZones *zones;
+        int range;
+        QList<QString> names;
+        QList <double> from, to;
 
 };
 #endif

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2009 Sean C. Rhea (srhea@srhea.net)
+ *               2011 Mark Liversedge (liversedge@gmail.com)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -17,27 +18,242 @@
  */
 
 #include "HistogramWindow.h"
-#include "MainWindow.h"
-#include "PowerHist.h"
-#include "RideFile.h"
-#include "RideItem.h"
-#include "Settings.h"
-#include <QtGui>
-#include <assert.h>
+#include "Specification.h"
+#include "HelpWhatsThis.h"
 
-#include "Zones.h"
-#include "HrZones.h"
+// predefined deltas for each series
+static const double wattsDelta = 1.0;
+static const double wattsKgDelta = 0.01;
+static const double nmDelta    = 0.1;
+static const double hrDelta    = 1.0;
+static const double kphDelta   = 0.1;
+static const double cadDelta   = 1.0;
+static const double gearDelta  = 0.01; //RideFileCache creates POW(10) * decimals sections
 
-HistogramWindow::HistogramWindow(MainWindow *mainWindow) :
-    QWidget(mainWindow), mainWindow(mainWindow)
+// digits for text entry validator
+static const int wattsDigits = 0;
+static const int wattsKgDigits = 2;
+static const int nmDigits    = 1;
+static const int hrDigits    = 0;
+static const int kphDigits   = 1;
+static const int cadDigits   = 0;
+static const int gearDigits  = 2;
+
+
+//
+// Constructor
+//
+HistogramWindow::HistogramWindow(Context *context, bool rangemode) : GcChartWindow(context), context(context), stale(true), source(NULL), active(false), bactive(false), rangemode(rangemode), compareStale(false), useCustom(false), useToToday(false), precision(99)
 {
+
+    QWidget *c = new QWidget;
+    c->setContentsMargins(0,0,0,0);
+    HelpWhatsThis *helpConfig = new HelpWhatsThis(c);
+    if (rangemode) c->setWhatsThis(helpConfig->getWhatsThisText(HelpWhatsThis::ChartTrends_Distribution));
+    else c->setWhatsThis(helpConfig->getWhatsThisText(HelpWhatsThis::ChartRides_Histogram));
+    QFormLayout *cl = new QFormLayout(c);
+    cl->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    cl->setSpacing(5);
+    setControls(c);
+
+    //
+    // reveal controls widget
+    //
+
+    // reveal controls
+    rWidth = new QLabel(tr("Bin Width"));
+    rBinEdit = new QLineEdit();
+    rBinEdit->setFixedWidth(40);
+    rBinSlider = new QSlider(Qt::Horizontal);
+    rBinSlider->setTickPosition(QSlider::TicksBelow);
+    rBinSlider->setTickInterval(10);
+    rBinSlider->setMinimum(1);
+    rBinSlider->setMaximum(100);
+    rShade = new QCheckBox(tr("Shade zones"));
+    rZones = new QCheckBox(tr("Show in zones"));
+
+    // layout reveal controls
+    QHBoxLayout *r = new QHBoxLayout;
+    r->setContentsMargins(0,0,0,0);
+    r->addStretch();
+    r->addWidget(rWidth);
+    r->addWidget(rBinEdit);
+    r->addWidget(rBinSlider);
+    QVBoxLayout *v = new QVBoxLayout;
+    v->addWidget(rShade);
+    v->addWidget(rZones);
+    r->addSpacing(20);
+    r->addLayout(v);
+    r->addStretch();
+    setRevealLayout(r);
+
+    // plot
     QVBoxLayout *vlayout = new QVBoxLayout;
+    vlayout->setSpacing(10);
+    powerHist = new PowerHist(context, rangemode);
+    vlayout->addWidget(powerHist);
+
+    HelpWhatsThis *help = new HelpWhatsThis(powerHist);
+    if (rangemode) powerHist->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::ChartTrends_Distribution));
+    else powerHist->setWhatsThis(help->getWhatsThisText(HelpWhatsThis::ChartRides_Histogram));
+
+    setChartLayout(vlayout);
+
+    // search filter box
+    isfiltered = false;
+    searchBox = new SearchFilterBox(this, context);
+    connect(searchBox, SIGNAL(searchClear()), this, SLOT(clearFilter()));
+    connect(searchBox, SIGNAL(searchResults(QStringList)), this, SLOT(setFilter(QStringList)));
+    if (!rangemode) searchBox->hide();
+    else {
+        cl->addRow(new QLabel(tr("Filter")), searchBox);
+        cl->addWidget(new QLabel(""));
+    }
+    HelpWhatsThis *searchHelp = new HelpWhatsThis(searchBox);
+    searchBox->setWhatsThis(searchHelp->getWhatsThisText(HelpWhatsThis::SearchFilterBox));
+
+    // date selection
+    dateSetting = new DateSettingsEdit(this);
+    HelpWhatsThis *dateSettingHelp = new HelpWhatsThis(dateSetting);
+    dateSetting->setWhatsThis(dateSettingHelp->getWhatsThisText(HelpWhatsThis::ChartTrends_DateRange));
+
+    if (rangemode) {
+
+        cl->addRow(new QLabel(tr("Date Range")), dateSetting);
+        cl->addWidget(new QLabel("")); // spacing
+
+        // default to data series!
+        data = new QRadioButton(tr("Data Samples"));
+        metric = new QRadioButton(tr("Metrics"));
+        data->setChecked(true);
+        metric->setChecked(false);
+        QHBoxLayout *radios = new QHBoxLayout;
+        radios->addWidget(data);
+        radios->addWidget(metric);
+        cl->addRow(new QLabel(tr("Plot")), radios);
+
+        connect(data, SIGNAL(toggled(bool)), this, SLOT(dataToggled(bool)));
+        connect(metric, SIGNAL(toggled(bool)), this, SLOT(metricToggled(bool)));
+    }
+
+    // data series
+    seriesCombo = new QComboBox();
+    addSeries();
+    if (rangemode) comboLabel = new QLabel("");
+    else comboLabel = new QLabel(tr("Data Series"));
+    cl->addRow(comboLabel, seriesCombo);
+
+    if (rangemode) {
+
+        // TOTAL METRIC
+        totalMetricTree = new QTreeWidget;
+#ifdef Q_OS_MAC
+        totalMetricTree->setAttribute(Qt::WA_MacShowFocusRect, 0);
+#endif
+        totalMetricTree->setColumnCount(2);
+        totalMetricTree->setColumnHidden(1, true);
+        totalMetricTree->setSelectionMode(QAbstractItemView::SingleSelection);
+        totalMetricTree->header()->hide();
+        //totalMetricTree->setFrameStyle(QFrame::NoFrame);
+        //totalMetricTree->setAlternatingRowColors (true);
+        totalMetricTree->setIndentation(5);
+        totalMetricTree->setContextMenuPolicy(Qt::CustomContextMenu);
+
+        // ALL METRIC
+        distMetricTree = new QTreeWidget;
+#ifdef Q_OS_MAC
+        distMetricTree->setAttribute(Qt::WA_MacShowFocusRect, 0);
+#endif
+        distMetricTree->setColumnCount(2);
+        distMetricTree->setColumnHidden(1, true);
+        distMetricTree->setSelectionMode(QAbstractItemView::SingleSelection);
+        distMetricTree->header()->hide();
+        //distMetricTree->setFrameStyle(QFrame::NoFrame);
+        distMetricTree->setIndentation(5);
+        distMetricTree->setContextMenuPolicy(Qt::CustomContextMenu);
+
+        // add them all
+        const RideMetricFactory &factory = RideMetricFactory::instance();
+        for (int i = 0; i < factory.metricCount(); ++i) {
+
+            const RideMetric *m = factory.rideMetric(factory.metricName(i));
+
+            QTextEdit processHTML(m->name()); // process html encoding of(TM)
+            QString processed = processHTML.toPlainText();
+
+            QTreeWidgetItem *add;
+            add = new QTreeWidgetItem(distMetricTree->invisibleRootItem());
+            add->setText(0, processed);
+            add->setText(1, m->symbol());
+
+            // we only want totalising metrics
+            if (m->type() != RideMetric::Total) continue;
+
+            add = new QTreeWidgetItem(totalMetricTree->invisibleRootItem());
+            add->setText(0, processed);
+            add->setText(1, m->symbol());
+        }
+
+        QHBoxLayout *labels = new QHBoxLayout;
+
+        metricLabel1 = new QLabel(tr("Total (x-axis)"));
+        labels->addWidget(metricLabel1);
+        metricLabel1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+
+        metricLabel2 = new QLabel(tr("Distribution (y-axis)"));
+        metricLabel2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+        labels->addWidget(metricLabel2);
+
+        cl->addRow((blankLabel1=new QLabel("")), labels);
+        QHBoxLayout *trees = new QHBoxLayout;
+        trees->addWidget(totalMetricTree);
+        trees->addWidget(distMetricTree);
+        cl->addRow((blankLabel2 = new QLabel("")), trees);
+
+        colorButton = new ColorButton(this, "Color", QColor(Qt::blue));
+        colorLabel = new QLabel(tr("Color"));
+        connect(colorButton, SIGNAL(colorChosen(QColor)), this, SLOT(updateChart()));
+        cl->addRow(colorLabel, colorButton);
+
+        // by default select number of rides by duration
+        // which are the metrics workout_time and ride_count
+        selectTotal("ride_count");
+        selectMetric("workout_time");
+    }
+
+    showSumY = new QComboBox();
+    showSumY->addItem(tr("Absolute Time"));
+    showSumY->addItem(tr("Percentage Time"));
+
+    showLabel = new QLabel(tr("Show"));
+    cl->addRow(showLabel, showSumY);
+
+    showLnY = new QCheckBox;
+    showLnY->setText(tr("Log Y"));
+    cl->addRow(blankLabel3 = new QLabel(""), showLnY);
+
+    showZeroes = new QCheckBox;
+    showZeroes->setText(tr("With zeros"));
+    cl->addRow(blankLabel4 = new QLabel(""), showZeroes);
+
+    shadeZones = new QCheckBox;
+    shadeZones->setText(tr("Shade zones"));
+    cl->addRow(blankLabel5 = new QLabel(""), shadeZones);
+
+    showInZones = new QCheckBox;
+    showInZones->setText(tr("Show in zones"));
+    cl->addRow(blankLabel6 = new QLabel(""), showInZones);
+
+    showInCPZones = new QCheckBox;
+    showInCPZones->setText(tr("Use polarised zones"));
+    cl->addRow(blankLabel7 = new QLabel(""), showInCPZones);
+
+    // bin width
     QHBoxLayout *binWidthLayout = new QHBoxLayout;
     QLabel *binWidthLabel = new QLabel(tr("Bin width"), this);
     binWidthLineEdit = new QLineEdit(this);
-    binWidthLineEdit->setFixedWidth(30);
+    binWidthLineEdit->setFixedWidth(40);
 
-    binWidthLayout->addWidget(binWidthLabel);
     binWidthLayout->addWidget(binWidthLineEdit);
     binWidthSlider = new QSlider(Qt::Horizontal);
     binWidthSlider->setTickPosition(QSlider::TicksBelow);
@@ -45,300 +261,873 @@ HistogramWindow::HistogramWindow(MainWindow *mainWindow) :
     binWidthSlider->setMinimum(1);
     binWidthSlider->setMaximum(100);
     binWidthLayout->addWidget(binWidthSlider);
+    cl->addRow(binWidthLabel, binWidthLayout);
 
-    lnYHistCheckBox = new QCheckBox;
-    lnYHistCheckBox->setText(tr("Log Y"));
-    binWidthLayout->addWidget(lnYHistCheckBox);
-
-    withZerosCheckBox = new QCheckBox;
-    withZerosCheckBox->setText(tr("With zeros"));
-    binWidthLayout->addWidget(withZerosCheckBox);
-
-    histShadeZones = new QCheckBox;
-    histShadeZones->setText(tr("Shade zones"));
-    histShadeZones->setChecked(true);
-    binWidthLayout->addWidget(histShadeZones);
-
-    histParameterCombo = new QComboBox();
-    binWidthLayout->addWidget(histParameterCombo);
-
-    histSumY = new QComboBox();
-    histSumY->addItem(tr("Absolute Time"));
-    histSumY->addItem(tr("Percentage Time"));
-    binWidthLayout->addWidget(histSumY);
-
-    powerHist = new PowerHist(mainWindow);
-    setHistTextValidator();
-
-    lnYHistCheckBox->setChecked(powerHist->islnY());
-    withZerosCheckBox->setChecked(powerHist->withZeros());
+    // sort out default values
+    setBinEditors();
+    showLnY->setChecked(powerHist->islnY());
+    showZeroes->setChecked(powerHist->withZeros());
+    shadeZones->setChecked(powerHist->shade);
     binWidthSlider->setValue(powerHist->binWidth());
-    setHistBinWidthText();
-    vlayout->addWidget(powerHist);
-    vlayout->addLayout(binWidthLayout);
-    setLayout(vlayout);
+    rBinSlider->setValue(powerHist->binWidth());
+    rShade->setChecked(powerHist->shade);
 
-    connect(binWidthSlider, SIGNAL(valueChanged(int)),
-            this, SLOT(setBinWidthFromSlider()));
-    connect(binWidthLineEdit, SIGNAL(editingFinished()),
-            this, SLOT(setBinWidthFromLineEdit()));
-    connect(lnYHistCheckBox, SIGNAL(stateChanged(int)),
-            this, SLOT(setlnYHistFromCheckBox()));
-    connect(withZerosCheckBox, SIGNAL(stateChanged(int)),
-            this, SLOT(setWithZerosFromCheckBox()));
-    connect(histParameterCombo, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(setHistSelection(int)));
-    connect(histShadeZones, SIGNAL(stateChanged(int)),
-            this, SLOT(setHistSelection(int)));
-    connect(histSumY, SIGNAL(currentIndexChanged(int)),
-            this, SLOT(setSumY(int)));
-    connect(mainWindow, SIGNAL(rideSelected()), this, SLOT(rideSelected()));
-    connect(mainWindow, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
-    connect(mainWindow, SIGNAL(zonesChanged()), this, SLOT(zonesChanged()));
-    connect(mainWindow, SIGNAL(configChanged()), powerHist, SLOT(configChanged()));
+    // fixup series selected by default
+    seriesChanged();
+
+    // hide/show according to default mode
+    switchMode(); // does nothing if not in rangemode
+
+    // set the defaults etc
+    updateChart();
+
+    // the bin slider/input update each other
+    // only the input box triggers an update to the chart
+    connect(binWidthSlider, SIGNAL(valueChanged(int)), this, SLOT(setBinWidthFromSlider()));
+    connect(binWidthLineEdit, SIGNAL(editingFinished()), this, SLOT(setBinWidthFromLineEdit()));
+    connect(rBinSlider, SIGNAL(valueChanged(int)), this, SLOT(setrBinWidthFromSlider()));
+    connect(rBinEdit, SIGNAL(editingFinished()), this, SLOT(setrBinWidthFromLineEdit()));
+    connect(rZones, SIGNAL(stateChanged(int)), this, SLOT(setZoned(int)));
+    connect(rShade, SIGNAL(stateChanged(int)), this, SLOT(setShade(int)));
+
+    // when season changes we need to retrieve data from the cache then update the chart
+    if (rangemode) {
+        connect(this, SIGNAL(dateRangeChanged(DateRange)), this, SLOT(dateRangeChanged(DateRange)));
+        connect(dateSetting, SIGNAL(useCustomRange(DateRange)), this, SLOT(useCustomRange(DateRange)));
+        connect(dateSetting, SIGNAL(useThruToday()), this, SLOT(useThruToday()));
+        connect(dateSetting, SIGNAL(useStandardRange()), this, SLOT(useStandardRange()));
+        connect(distMetricTree, SIGNAL(itemSelectionChanged()), this, SLOT(treeSelectionChanged()));
+        connect(totalMetricTree, SIGNAL(itemSelectionChanged()), this, SLOT(treeSelectionChanged()));
+
+        // replot when background refresh is progressing
+        connect(context, SIGNAL(refreshUpdate(QDate)), this, SLOT(refreshUpdate(QDate)));
+
+        // comparing things
+        connect(context, SIGNAL(compareDateRangesStateChanged(bool)), this, SLOT(compareChanged()));
+        connect(context, SIGNAL(compareDateRangesChanged()), this, SLOT(compareChanged()));
+
+    } else {
+        dateSetting->hide();
+        connect(this, SIGNAL(rideItemChanged(RideItem*)), this, SLOT(rideSelected()));
+        connect(context, SIGNAL(rideChanged(RideItem*)), this, SLOT(forceReplot()));
+        connect(context, SIGNAL(intervalSelected()), this, SLOT(intervalSelected()));
+        connect(context, SIGNAL(intervalHover(RideFileInterval)), powerHist, SLOT(intervalHover(RideFileInterval)));
+
+        // comparing things
+        connect(context, SIGNAL(compareIntervalsStateChanged(bool)), this, SLOT(compareChanged()));
+        connect(context, SIGNAL(compareIntervalsChanged()), this, SLOT(compareChanged()));
+    }
+
+    // if any of the controls change we pass the chart everything
+    connect(showLnY, SIGNAL(stateChanged(int)), this, SLOT(forceReplot()));
+    connect(showZeroes, SIGNAL(stateChanged(int)), this, SLOT(forceReplot()));
+    connect(seriesCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(seriesChanged()));
+    connect(showInCPZones, SIGNAL(stateChanged(int)), this, SLOT(setCPZoned(int)));
+    connect(showInCPZones, SIGNAL(stateChanged(int)), this, SLOT(forceReplot()));
+    connect(showInZones, SIGNAL(stateChanged(int)), this, SLOT(setZoned(int)));
+    connect(showInZones, SIGNAL(stateChanged(int)), this, SLOT(forceReplot()));
+    connect(shadeZones, SIGNAL(stateChanged(int)), this, SLOT(setShade(int)));
+    connect(shadeZones, SIGNAL(stateChanged(int)), this, SLOT(forceReplot()));
+    connect(showSumY, SIGNAL(currentIndexChanged(int)), this, SLOT(forceReplot()));
+
+    connect(context->athlete, SIGNAL(zonesChanged()), this, SLOT(zonesChanged()));
+    connect(context, SIGNAL(configChanged(qint32)), this, SLOT(configChanged(qint32)));
+
+    connect(context, SIGNAL(rideAdded(RideItem*)), this, SLOT(rideAddorRemove(RideItem*)));
+    connect(context, SIGNAL(rideDeleted(RideItem*)), this, SLOT(rideAddorRemove(RideItem*)));
+    connect(context, SIGNAL(rideSaved(RideItem*)), this, SLOT(rideAddorRemove(RideItem*)));
+    connect(context, SIGNAL(filterChanged()), this, SLOT(forceReplot()));
+    connect(context, SIGNAL(homeFilterChanged()), this, SLOT(forceReplot()));
+
+    // set colors etc
+    configChanged(CONFIG_APPEARANCE);
 }
 
+void
+HistogramWindow::configChanged(qint32 state)
+{
+    if (!rangemode) setProperty("color", GColor(CPLOTBACKGROUND)); // called on config change
+    else setProperty("color", GColor(CTRENDPLOTBACKGROUND)); // called on config change
+    powerHist->configChanged(state);
+}
+
+bool
+HistogramWindow::isCompare() const
+{
+    // compare intervals ?
+    if (!rangemode && context->isCompareIntervals) return true;
+
+    // compare date ranges ?
+    if (rangemode && context->isCompareDateRanges) return true;
+
+    return false;
+}
+
+void 
+HistogramWindow::compareChanged()
+{
+    stale = true; // the 'standard' plots will need to be updated
+    compareStale = true;
+
+    if (!isVisible()) return;
+
+    setUpdatesEnabled(false);
+
+    // to stop getting into an infinite loop
+    // when turning off coimpare mode and using
+    // rideSelected to refresh
+    compareStale = false;
+
+    if (isCompare()) {
+
+        // is blank?
+        setIsBlank(false); // current ride irrelevant!
+
+        // hide normal curves
+        powerHist->hideStandard(true);
+
+        // now set the controls
+        RideFile::SeriesType series = static_cast<RideFile::SeriesType>
+                                        (seriesCombo->itemData(seriesCombo->currentIndex()).toInt());
+        powerHist->setSeries(series);
+
+        // and now the controls
+        powerHist->setShading(shadeZones->isChecked() ? true : false);
+        powerHist->setZoned(showInZones->isChecked() ? true : false);
+        powerHist->setCPZoned(showInCPZones->isChecked() ? true : false);
+        powerHist->setlnY(showLnY->isChecked() ? true : false);
+        powerHist->setWithZeros(showZeroes->isChecked() ? true : false);
+        powerHist->setSumY(showSumY->currentIndex()== 0 ? true : false);
+
+        // set data and create empty curves
+        if (!rangemode || data->isChecked()) {
+
+            // using the bests (ride file cache)
+            powerHist->setDataFromCompare();
+
+        } else {
+            // using the metric arrays
+            powerHist->setDelta(getDelta());
+            powerHist->setDigits(getDigits());
+            powerHist->setDataFromCompare(totalMetric(), distMetric());
+        }
+        powerHist->recalcCompare();
+
+    } else {
+
+            // show our normal curves and wipe rest
+            powerHist->hideStandard(false);
+            rideSelected(); // back to where we were
+    }
+
+    // replot!
+    powerHist->replot();
+
+    // repaint (in case optimised out)
+    repaint();
+
+    // and we're done
+    setUpdatesEnabled(true);
+}
+
+//
+// Colors (used by metric plotting)
+//
+QString HistogramWindow::plotColor() const
+{
+    if (!rangemode) return QColor(Qt::blue).name();
+    else {
+        return colorButton->getColor().name();
+    }
+}
+
+void HistogramWindow::setPlotColor(QString color)
+{
+    if (rangemode) colorButton->setColor(QColor(color));
+}
+
+//
+// Set Bin Width property by setting the slider
+//
+void HistogramWindow::setBin(double x)
+{
+    if (bactive) return;
+    bactive = true;
+    binWidthSlider->setValue(x/getDelta());
+    rBinSlider->setValue(x/getDelta());
+    binWidthLineEdit->setText(QString("%1").arg(x, 0, 'f', getDigits()));
+    rBinEdit->setText(QString("%1").arg(x, 0, 'f', getDigits()));
+    powerHist->setBinWidth(x);
+    bactive = false;
+
+    // redraw
+    stale = true;
+    updateChart();
+}
+
+//
+// Get/Set the metric selections
+//
+QString HistogramWindow::distMetric() const
+{
+    if (!rangemode) return "workout_time";
+    else {
+        // get current selection
+        QList<QTreeWidgetItem *> select = distMetricTree->selectedItems();
+        if (select.count() == 0) return "workout_time";
+        else return select[0]->text(1);
+    }
+}
+
+void HistogramWindow::setDistMetric(QString value)
+{
+    if (!rangemode) return;
+    selectMetric(value);
+}
+
+QString HistogramWindow::totalMetric() const
+{
+    if (!rangemode) return "ride_count";
+    else {
+        // get current selection
+        QList<QTreeWidgetItem *> select = totalMetricTree->selectedItems();
+        if (select.count() == 0) return "ride_count";
+        else return select[0]->text(1);
+    }
+}
+
+void HistogramWindow::setTotalMetric(QString value)
+{
+    if (!rangemode) return;
+    selectTotal(value);
+}
+
+void
+HistogramWindow::selectTotal(QString symbol)
+{
+    QList<QTreeWidgetItem *> found = totalMetricTree->findItems(symbol, Qt::MatchRecursive|Qt::MatchExactly, 1);
+    if (found.count() == 0) return;
+
+    // clear the current selection
+    foreach(QTreeWidgetItem *selected, totalMetricTree->selectedItems()) selected->setSelected(false);
+
+    // select the first one (there shouldn't be more than that!!!
+    found[0]->setSelected(true);
+
+    // make sure it is the current item and visible
+    totalMetricTree->setCurrentItem(found[0]);
+    totalMetricTree->scrollToItem(totalMetricTree->currentItem());
+}
+
+void
+HistogramWindow::selectMetric(QString symbol)
+{
+    QList<QTreeWidgetItem *> found = distMetricTree->findItems(symbol, Qt::MatchRecursive|Qt::MatchExactly, 1);
+    if (found.count() == 0) return;
+
+    // clear the current selection
+    foreach(QTreeWidgetItem *selected, distMetricTree->selectedItems()) selected->setSelected(false);
+
+    // select the first one (there shouldn't be more than that!!!
+    found[0]->setSelected(true);
+
+    // make sure it is the current item and visible
+    distMetricTree->setCurrentItem(found[0]);
+    distMetricTree->scrollToItem(distMetricTree->currentItem());
+}
+
+//
+// get set mode (data series or metric?) -- only in rangemode
+//
+bool HistogramWindow::dataMode() const
+{
+    if (!rangemode) return true;
+    else return data->isChecked();
+}
+
+void HistogramWindow::setDataMode(bool value)
+{
+    if (!rangemode) return;
+    else {
+        active = true;
+        data->setChecked(value);
+        metric->setChecked(!value);
+        active = false;
+        switchMode();
+    }
+}
+
+//
+// When user changes from data series to metric
+//
+void
+HistogramWindow::dataToggled(bool x)
+{
+    if (active) return;
+
+    active = true;
+    stale = true;
+    metric->setChecked(!x);
+    switchMode();
+    active = false;
+}
+
+void
+HistogramWindow::metricToggled(bool x)
+{
+    if (active) return;
+
+    active = true;
+    stale = true;
+    data->setChecked(!x);
+    switchMode();
+    active = false;
+}
+
+void
+HistogramWindow::switchMode()
+{
+    if (!rangemode) return; // ! only valid in rangemode
+
+    if (data->isChecked()) {
+
+        // hide all the metric controls
+        blankLabel1->hide();
+        blankLabel2->hide();
+        distMetricTree->hide();
+        totalMetricTree->hide();
+        metricLabel1->hide();
+        metricLabel2->hide();
+        colorLabel->hide();
+        colorButton->hide();
+        
+        // show all the data series controls
+        comboLabel->show();
+        seriesCombo->show();
+        blankLabel3->show();
+        blankLabel4->show();
+        blankLabel5->show();
+        blankLabel6->show();
+        blankLabel7->show();
+        showSumY->show();
+        showLabel->show();
+        showLnY->show();
+        showZeroes->show();
+        shadeZones->show();
+        showInZones->show();
+        showInCPZones->show();
+
+        // select the series..
+        seriesChanged();
+
+    } else {
+
+        // hide all the data series controls
+        comboLabel->hide();
+        seriesCombo->hide();
+        blankLabel3->hide();
+        blankLabel4->hide();
+        blankLabel5->hide();
+        blankLabel6->hide();
+        blankLabel7->hide();
+        showSumY->hide();
+        showLabel->hide();
+        showLnY->hide();
+        showZeroes->hide();
+        shadeZones->hide();
+        showInZones->hide();
+        showInCPZones->hide();
+
+        // show all the metric controls
+        blankLabel1->show();
+        blankLabel2->show();
+        metricLabel1->show();
+        metricLabel2->show();
+        distMetricTree->show();
+        totalMetricTree->show();
+        colorLabel->show();
+        colorButton->show();
+
+        // select the series.. (but without the half second delay)
+        treeSelectionChanged();
+    }
+
+    stale = true;
+    updateChart(); // to whatever is currently selected.
+}
+
+
+//
+// When user selects a new metric
+//
+void
+HistogramWindow::treeSelectionChanged()
+{
+    // new metric chosen, so set up all the bin width, line edit
+    // delta, precision etc
+    powerHist->setSeries(RideFile::none);
+    powerHist->setDelta(getDelta());
+    powerHist->setDigits(getDigits());
+
+    // now update the slider stepper and linedit
+    setBinEditors();
+
+    // initial value -- but only if need to
+    double minbinw = getDelta();
+    double maxbinw = getDelta() * 100;
+    double current = binWidthLineEdit->text().toDouble();
+    if (current < minbinw || current > maxbinw) setBin(getDelta());
+
+    // replot
+    updateChart();
+}
+
+//
+// When user selects a different data series
+//
+void
+HistogramWindow::seriesChanged()
+{
+    // series changed so tell power hist
+    powerHist->setSeries(static_cast<RideFile::SeriesType>(seriesCombo->itemData(seriesCombo->currentIndex()).toInt()));
+    powerHist->setDelta(getDelta());
+    powerHist->setDigits(getDigits());
+
+    // now update the slider stepper and linedit
+    setBinEditors();
+
+    // set an initial bin width value
+    setBin(getDelta());
+
+    // replot
+    stale = true;
+    updateChart();
+}
+
+//
+// We need to config / update the controls when data series/metrics change
+//
+void
+HistogramWindow::setBinEditors()
+{
+    // the line edit validator
+    QValidator *validator;
+    if (getDigits() == 0) {
+
+        validator = new QIntValidator(binWidthSlider->minimum() * getDelta(),
+                                      binWidthSlider->maximum() * getDelta(),
+                                      binWidthLineEdit);
+    } else {
+
+        validator = new QDoubleValidator(binWidthSlider->minimum() * getDelta(),
+                                         binWidthSlider->maximum() * getDelta(),
+                                         getDigits(),
+                                         binWidthLineEdit);
+    }
+    binWidthLineEdit->setValidator(validator);
+    rBinEdit->setValidator(validator);
+}
+
+//
+// A new ride was selected
+//
 void
 HistogramWindow::rideSelected()
 {
-    if (mainWindow->activeTab() != this)
-        return;
-    RideItem *ride = mainWindow->rideItem();
-    if (!ride)
-        return;
+    if (!amVisible()) return;
 
-    // get range that applies to this ride
-    powerRange = mainWindow->zones()->whichRange(ride->dateTime.date());
-    hrRange = mainWindow->hrZones()->whichRange(ride->dateTime.date());
+    RideItem *ride = myRideItem;
+    // handle catch up to compare changed
+    if (compareStale) compareChanged();
 
-    // set the histogram data
-    powerHist->setData(ride);
-    // make sure the histogram has a legal selection
-    powerHist->fixSelection();
-    // update the options in the histogram combobox
-    setHistWidgets(ride);
+    if (!ride || isCompare() || (rangemode && !stale)) return;
+
+    if (rangemode) {
+        // get range that applies to this ride
+        powerRange = context->athlete->zones()->whichRange(ride->dateTime.date());
+        hrRange = context->athlete->hrZones()->whichRange(ride->dateTime.date());
+    }
+
+    // update
+    updateChart();
 }
 
+//
+// User selected a new interval
+//
 void
 HistogramWindow::intervalSelected()
 {
-    if (mainWindow->activeTab() != this)
-        return;
-    RideItem *ride = mainWindow->rideItem();
-    if (!ride) return;
+    if (!amVisible()) return;
 
-    // set the histogram data
-    powerHist->setData(ride);
+    RideItem *ride = myRideItem;
+
+    // null? or not plotting current ride, ignore signal
+    if (!ride || isCompare() || rangemode) return;
+
+    // update
+    interval = true;
+    updateChart();
+}
+
+void
+HistogramWindow::rideAddorRemove(RideItem *)
+{
+    stale = true;
+    if (amVisible()) updateChart();
 }
 
 void
 HistogramWindow::zonesChanged()
 {
-    if (mainWindow->activeTab() != this)
-        return;
+    if (!amVisible()) return;
+
     powerHist->refreshZoneLabels();
     powerHist->replot();
 }
 
 void
+HistogramWindow::useCustomRange(DateRange range)
+{
+    // plot using the supplied range
+    useCustom = true;
+    useToToday = false;
+    custom = range;
+    dateRangeChanged(custom);
+}
+
+void
+HistogramWindow::useStandardRange()
+{
+    useToToday= useCustom = false;
+    dateRangeChanged(myDateRange);
+}
+
+void
+HistogramWindow::useThruToday()
+{
+    // plot using the supplied range
+    useCustom = false;
+    useToToday = true;
+    custom = myDateRange;
+    if (custom.to > QDate::currentDate()) custom.to = QDate::currentDate();
+    dateRangeChanged(custom);
+}
+
+void HistogramWindow::dateRangeChanged(DateRange dateRange)
+{
+    // compare mode?
+    if (amVisible() && compareStale) compareChanged();
+
+    // if we're using a custom one lets keep it
+    if (rangemode && (useCustom || useToToday)) dateRange = custom;
+
+    // has it changed?
+    if (dateRange.from != cfrom || dateRange.to != cto) 
+        stale = true;
+
+    // don't do it if we're invisible, in compare or
+    // nothing has changed since last time ..
+    if (!amVisible() || isCompare() || !stale) return;
+
+    updateChart();
+}
+
+void HistogramWindow::addSeries()
+{
+    // setup series list
+    seriesList << RideFile::watts
+               << RideFile::wattsKg
+               << RideFile::hr
+               << RideFile::kph
+               << RideFile::cad
+               << RideFile::nm
+               << RideFile::aPower
+               << RideFile::gear
+               << RideFile::smo2;
+
+    foreach (RideFile::SeriesType x, seriesList) 
+        seriesCombo->addItem(RideFile::seriesName(x), static_cast<int>(x));
+}
+
+void
 HistogramWindow::setBinWidthFromSlider()
 {
-    if (powerHist->binWidth() != binWidthSlider->value()) {
-        powerHist->setBinWidth(binWidthSlider->value());
-	setHistBinWidthText();
-    }
+    if (bactive) return;
+    setBin(binWidthSlider->value() * getDelta());
 }
 
 void
-HistogramWindow::setlnYHistFromCheckBox()
+HistogramWindow::setrBinWidthFromSlider()
 {
-    if (powerHist->islnY() != lnYHistCheckBox->isChecked())
-	powerHist->setlnY(! powerHist->islnY());
-}
-
-void
-HistogramWindow::setSumY(int index)
-{
-    if (index < 0) return; // being destroyed
-    else powerHist->setSumY(index == 0);
-}
-
-void
-HistogramWindow::setWithZerosFromCheckBox()
-{
-    if (powerHist->withZeros() != withZerosCheckBox->isChecked()) {
-        powerHist->setWithZeros(withZerosCheckBox->isChecked());
-    }
-}
-
-void
-HistogramWindow::setHistBinWidthText()
-{
-    binWidthLineEdit->setText(QString("%1").arg(powerHist->getBinWidthRealUnits(), 0, 'g', 3));
-}
-
-void
-HistogramWindow::setHistTextValidator()
-{
-    double delta = powerHist->getDelta();
-    int digits = powerHist->getDigits();
-    binWidthLineEdit->setValidator(
-	    (digits == 0) ?
-	    (QValidator *) (
-		new QIntValidator(binWidthSlider->minimum() * delta,
-		    binWidthSlider->maximum() * delta,
-		    binWidthLineEdit
-		    )
-		) :
-	    (QValidator *) (
-		new QDoubleValidator(binWidthSlider->minimum() * delta,
-		    binWidthSlider->maximum() * delta,
-		    digits,
-		    binWidthLineEdit
-		    )
-		)
-	    );
-
-}
-
-void
-HistogramWindow::setHistSelection(int /*id*/)
-{
-    // Set shading first, since the dataseries selection
-    // below will trigger a redraw, and we need to have
-    // set the shading beforehand. OK, so we could make
-    // either change trigger it, but this makes for simpler
-    // code here and in powerhist.cpp
-    if (histShadeZones->isChecked()) powerHist->setShading(true);
-    else powerHist->setShading(false);
-
-    // lets get the selection since we are called from
-    // the checkbox and combobox signal
-    int id = histParameterCombo->currentIndex();
-
-    // Which data series are we plotting?
-    if (id == histWattsID)
-	    powerHist->setSelection(PowerHist::watts);
-    else if (id == histWattsZoneID) // we can zone power!
-	    powerHist->setSelection(PowerHist::wattsZone);
-    else if (id == histNmID)
-	    powerHist->setSelection(PowerHist::nm);
-    else if (id == histHrID)
-	    powerHist->setSelection(PowerHist::hr);
-    else if (id == histHrZoneID) // we can zone HR!
-	    powerHist->setSelection(PowerHist::hrZone);
-    else if (id == histKphID)
-	    powerHist->setSelection(PowerHist::kph);
-    else if (id == histCadID)
-	    powerHist->setSelection(PowerHist::cad);
-    else
-        powerHist->setSelection(PowerHist::watts);
-
-    // just in case it gets switch off...
-    if (!powerHist->islnY()) lnYHistCheckBox->setChecked(false);
-
-    setHistBinWidthText();
-    setHistTextValidator();
+    if (bactive) return;
+    setBin(rBinSlider->value() * getDelta());
 }
 
 void
 HistogramWindow::setBinWidthFromLineEdit()
 {
-    double value = binWidthLineEdit->text().toDouble();
-    if (value != powerHist->binWidth()) {
-	binWidthSlider->setValue(powerHist->setBinWidthRealUnits(value));
-	setHistBinWidthText();
-    }
+    if (bactive) return;
+    setBin(binWidthLineEdit->text().toDouble());
 }
 
 void
-HistogramWindow::setHistWidgets(RideItem *rideItem)
+HistogramWindow::setrBinWidthFromLineEdit()
 {
-    int count = 0;
-    assert(rideItem);
-    RideFile *ride = rideItem->ride();
-
-    // prevent selection from changing during reconstruction of options
-    disconnect(histParameterCombo, SIGNAL(currentIndexChanged(int)),
-	       this, SLOT(setHistSelection(int)));
-
-    if (ride) {
-	// we want to retain the present selection
-    PowerHist::Selection s = powerHist->selection();
-
-	histParameterCombo->clear();
-
-	histWattsID = histWattsZoneID =
-    histNmID = histHrID = histHrZoneID =
-    histKphID = histCadID = -1;
-
-	if (ride->areDataPresent()->watts) {
-        histWattsID = count ++;
-        histParameterCombo->addItem(tr("Watts"));
-
-        if (powerRange != -1) {
-            histWattsZoneID = count ++;
-            histParameterCombo->addItem(tr("Watts (by Zone)"));
-        }
-	}
-	if (ride->areDataPresent()->nm) {
-	    histNmID = count ++;
-	    histParameterCombo->addItem(tr("Torque"));
-	}
-	if (ride->areDataPresent()->hr) {
-	    histHrID = count ++;
-	    histParameterCombo->addItem(tr("Heartrate"));
-        if (hrRange != -1) {
-	        histHrZoneID = count ++;
-	        histParameterCombo->addItem(tr("Heartrate (by Zone)"));
-        }
-	}
-	if (ride->areDataPresent()->kph) {
-	    histKphID = count ++;
-	    histParameterCombo->addItem(tr("Speed"));
-	}
-	if (ride->areDataPresent()->cad) {
-	    histCadID = count ++;
-	    histParameterCombo->addItem(tr("Cadence"));
-	}
-	if (count > 0) {
-	    histParameterCombo->setEnabled(true);
-	    binWidthLineEdit->setEnabled(true);
-	    binWidthSlider->setEnabled(true);
-	    withZerosCheckBox->setEnabled(true);
-	    lnYHistCheckBox->setEnabled(true);
-
-	    // set widget to proper value
-	    if ((s == PowerHist::watts) && (histWattsID >= 0))
-		histParameterCombo->setCurrentIndex(histWattsID);
-	    else if ((s == PowerHist::wattsZone) && (histWattsZoneID >= 0))
-		histParameterCombo->setCurrentIndex(histWattsZoneID);
-	    else if ((s == PowerHist::nm) && (histNmID >= 0))
-		histParameterCombo->setCurrentIndex(histNmID);
-	    else if ((s == PowerHist::hr) && (histHrID >= 0))
-		histParameterCombo->setCurrentIndex(histHrID);
-	    else if ((s == PowerHist::hrZone) && (histHrZoneID >= 0))
-		histParameterCombo->setCurrentIndex(histHrZoneID);
-	    else if ((s == PowerHist::kph) && (histKphID >= 0))
-		histParameterCombo->setCurrentIndex(histKphID);
-	    else if ((s == PowerHist::cad) && (histCadID >= 0))
-		histParameterCombo->setCurrentIndex(histCadID);
-	    else
-		histParameterCombo->setCurrentIndex(0);
-
-	    // reconnect widget
-	    connect(histParameterCombo, SIGNAL(currentIndexChanged(int)),
-		    this, SLOT(setHistSelection(int)));
-
-	    return;
-	}
-    }
-
-    histParameterCombo->addItem(tr("no data"));
-    histParameterCombo->setEnabled(false);
-    binWidthLineEdit->setEnabled(false);
-    binWidthSlider->setEnabled(false);
-    withZerosCheckBox->setEnabled(false);
-    lnYHistCheckBox->setEnabled(false);
+    if (bactive) return;
+    setBin(rBinEdit->text().toDouble());
 }
 
+void
+HistogramWindow::setCPZoned(int x)
+{
+    showInCPZones->setCheckState((Qt::CheckState)x);
+    
+}
+
+void
+HistogramWindow::setZoned(int x)
+{
+    rZones->setCheckState((Qt::CheckState)x);
+    showInZones->setCheckState((Qt::CheckState)x);
+    
+}
+
+void
+HistogramWindow::setShade(int x)
+{
+    rShade->setCheckState((Qt::CheckState)x);
+    shadeZones->setCheckState((Qt::CheckState)x);
+}
+
+void
+HistogramWindow::refreshUpdate(QDate past)
+{
+    if (!rangemode || cfrom > past || (lastupdate != QTime() && lastupdate.secsTo(QTime::currentTime()) < 5)) return;
+    lastupdate = QTime::currentTime();
+    forceReplot();
+
+}
+
+void
+HistogramWindow::forceReplot()
+{
+    stale = true;
+    if (amVisible()) updateChart();
+}
+
+void
+HistogramWindow::updateChart()
+{
+    // What is the selected series?
+    RideFile::SeriesType series = static_cast<RideFile::SeriesType>(seriesCombo->itemData(seriesCombo->currentIndex()).toInt());
+
+    // compare mode does its own thing so ignore
+    // this request (but set stale) if we're comparing
+    // we WILL get called when compare ends
+    if (!amVisible()) {
+        stale = true;
+        return;
+    }
+
+    // just reflect chart setting changes
+    if (isCompare()) {
+
+        compareChanged();
+        return;
+    }
+
+    // If no data present show the blank state page
+    if (!rangemode) {
+        RideFile::SeriesType baseSeries = (series == RideFile::wattsKg) ? RideFile::watts : series;
+        if (rideItem() != NULL && rideItem()->ride()->isDataPresent(baseSeries))
+            setIsBlank(false);
+        else
+            setIsBlank(true);
+    } else {
+        setIsBlank(false);
+    }
+
+    // Lets get the data then
+    if (stale) {
+
+        RideFileCache *old = source;
+
+        if (rangemode) {
+
+            // set the date range to the appropriate selection
+            DateRange use;
+            if (useCustom) {
+
+                use = custom;
+
+            } else if (useToToday) {
+
+                use = myDateRange;
+                QDate today = QDate::currentDate();
+                if (use.to > today) use.to = today;
+
+            } else {
+
+                use = myDateRange;
+            }
+
+            if (data->isChecked()) {
+
+                // plotting a data series, so refresh the ridefilecache
+
+                source = new RideFileCache(context, use.from, use.to, isfiltered, files, rangemode);
+                cfrom = use.from;
+                cto = use.to;
+                stale = false;
+
+                if (old) delete old; // guarantee source pointer changes
+                stale = false; // well we tried
+
+                // and which series to plot
+                powerHist->setSeries(series);
+
+                // and now the controls
+                powerHist->setShading(shadeZones->isChecked() ? true : false);
+                powerHist->setZoned(showInZones->isChecked() ? true : false);
+                powerHist->setCPZoned(showInCPZones->isChecked() ? true : false);
+                powerHist->setlnY(showLnY->isChecked() ? true : false);
+                powerHist->setWithZeros(showZeroes->isChecked() ? true : false);
+                powerHist->setSumY(showSumY->currentIndex()== 0 ? true : false);
+
+                // set the data on the plot
+                powerHist->setData(source);
+
+            } else {
+
+                if (last.from != use.from || last.to != use.to) {
+
+                    // remember the last lot we collected
+                    last = use;
+
+                }
+
+                FilterSet fs;
+                fs.addFilter(isfiltered, files);
+                fs.addFilter(context->isfiltered, context->filters);
+                fs.addFilter(context->ishomefiltered, context->homeFilters);
+
+                // setData using the summary metrics -- always reset since filters may
+                // have changed, or perhaps the bin width...
+                powerHist->setSeries(RideFile::none);
+                powerHist->setDelta(getDelta());
+                powerHist->setDigits(getDigits());
+                powerHist->setData(Specification(use,fs), totalMetric(), distMetric(), &powerHist->standard);
+                powerHist->setColor(colorButton->getColor());
+
+            }
+
+        } else {
+
+            // and which series to plot
+            powerHist->setSeries(series);
+
+            // and now the controls
+            powerHist->setShading(shadeZones->isChecked() ? true : false);
+            powerHist->setZoned(showInZones->isChecked() ? true : false);
+            powerHist->setCPZoned(showInCPZones->isChecked() ? true : false);
+            powerHist->setlnY(showLnY->isChecked() ? true : false);
+            powerHist->setWithZeros(showZeroes->isChecked() ? true : false);
+            powerHist->setSumY(showSumY->currentIndex()== 0 ? true : false);
+
+            // do once the controls are set
+            powerHist->setData(myRideItem, true); // intervals selected forces data to
+                                                  // be recomputed since interval selection
+                                                  // has changed.
+
+        }
+
+        powerHist->recalc(true); // interval changed? force recalc
+        powerHist->replot();
+
+        interval = false;// we force a recalc when called coz intervals
+                        // have been selected. The recalc routine in
+                        // powerhist optimises out, but doesn't keep track
+                        // of interval selection -- simplifies the setters
+                        // and getters, so worth this 'hack'.
+    } // if stale
+}
+
+void 
+HistogramWindow::clearFilter()
+{
+    isfiltered = false;
+    files.clear();
+    stale = true;
+    updateChart();
+    repaint();
+}
+
+void
+HistogramWindow::setFilter(QStringList list)
+{
+    isfiltered = true;
+    files = list;
+    stale = true;
+    updateChart();
+    repaint();
+}
+
+double
+HistogramWindow::getDelta()
+{
+    if (rangemode && !data->isChecked()) {
+
+        // based upon the metric chosen
+        const RideMetricFactory &factory = RideMetricFactory::instance();
+        const RideMetric *m = factory.rideMetric(distMetric());
+
+        if (m) return 1.00F / pow(10, m->precision());
+        else return 1;
+
+
+    } else {
+
+        // use the predefined delta
+        switch (seriesCombo->currentIndex()) {
+            case 0: return wattsDelta;
+            case 1: return wattsKgDelta;
+            case 2: return hrDelta;
+            case 3: return kphDelta;
+            case 4: return cadDelta;
+            case 5: return nmDelta;
+            case 6: return wattsDelta; //aPower
+            case 7: return gearDelta;
+            default: return 1;
+        }
+    }
+}
+
+int
+HistogramWindow::getDigits()
+{
+    if (rangemode && !data->isChecked()) {
+
+        // based upon the metric chosen
+        const RideMetricFactory &factory = RideMetricFactory::instance();
+        const RideMetric *m = factory.rideMetric(distMetric());
+
+        if (m) return m->precision();
+        else return 0;
+
+    } else {
+
+        // use predefined for data series
+        switch (seriesCombo->currentIndex()) {
+            case  0: return wattsDigits;
+            case  1: return wattsKgDigits;
+            case  2: return hrDigits;
+            case  3: return kphDigits;
+            case  4: return cadDigits;
+            case  5: return nmDigits;
+            case  6: return wattsDigits; // aPower
+            case  7: return gearDigits;
+            default: return 1;
+        }
+    }
+}

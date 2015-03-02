@@ -10,7 +10,7 @@
 ##########################
 
 function usage() {
-    echo "Usage: $0 [-b|--branch <svn-branch>] [-pdf] [-qch] [packagename]"
+    echo "Usage: $0 [-b|--branch <svn-branch>] [-s|--suffix <suffix>] [-html] [-pdf] [-qch] [packagename]"
     exit 1
 }
 
@@ -29,7 +29,7 @@ function checkoutQwt() {
         fi
     fi
 
-    svn -q co https://qwt.svn.sourceforge.net/svnroot/qwt/$1/$2
+    svn -q co https://svn.code.sf.net/p/qwt/code/$1/$2
     if [ $? -ne 0 ]
     then
         echo "Can't access sourceforge SVN"
@@ -57,13 +57,15 @@ function cleanQwt {
 
     find . -name .svn -print | xargs rm -r
 
-    rm TODO
-    rm admin/svn2package.sh
+    rm -f TODO
+    rm -rf admin
+    rm -rf doc/tex
 
-    PROFILES="qwtconfig.pri"
+    PROFILES="qwtbuild.pri"
     for PROFILE in $PROFILES
     do
-        sed -i -e 's/= debug /= release /' $PROFILE 
+        sed -i -e 's/= debug/= release/' $PROFILE 
+        sed -i -e 's/= release_and_release/= debug_and_release/' $PROFILE 
     done
 
     HEADERS=`find . -type f -name '*.h' -print`
@@ -82,8 +84,14 @@ function cleanQwt {
         sed -i -e '/#warning/d' $SRCFILE 
     done 
 
-    sed -i -e "s/\$\$VERSION-svn/$VERSION/" qwtconfig.pri 
-    sed -i -e "s/\$\${QwtVersion}-svn/\$\${QwtVersion}/" qwt.prf 
+    if [ "$SUFFIX" != "" ]
+    then
+        sed -i -e "s/\$\$QWT_VERSION-svn/\$\$QWT_VERSION-$SUFFIX/" qwtconfig.pri 
+    	sed -i -e "s/\$(QWTVERSION)/$VERSION-$SUFFIX/" doc/install.dox
+    else
+        sed -i -e "s/\$\$QWT_VERSION-svn/\$\$QWT_VERSION/" qwtconfig.pri
+    	sed -i -e "s/\$(QWTVERSION)/$VERSION/" doc/install.dox
+    fi
 
     cd - > /dev/null
 }
@@ -102,14 +110,17 @@ function createDocs {
         exit $?
     fi
 
+    if [ "$SUFFIX" != "" ]
+    then
+		export QWTVERSION=$VERSION-$SUFFIX
+    else
+		export QWTVERSION=$VERSION
+    fi
     cp Doxyfile Doxyfile.doc
-
-    sed -i '/PROJECT_NUMBER/d' Doxyfile.doc
-    echo "PROJECT_NUMBER = $VERSION" >> Doxyfile.doc
 
     if [ $GENERATE_MAN -ne 0 ]
     then
-        sed -i -e '/GENERATE_MAN/d' -e '/PROJECT_NUMBER/d' Doxyfile.doc
+        sed -i -e '/GENERATE_MAN/d' Doxyfile.doc
         echo 'GENERATE_MAN = YES' >> Doxyfile.doc
     fi
 
@@ -117,30 +128,26 @@ function createDocs {
     then
         # We need LateX for the qwtdoc.pdf
 
-        sed -i -e '/GENERATE_LATEX/d' -e '/GENERATE_MAN/d' -e '/PROJECT_NUMBER/d' Doxyfile.doc
+        sed -i -e '/GENERATE_LATEX/d' -e '/GENERATE_MAN/d' Doxyfile.doc
         echo 'GENERATE_LATEX = YES' >> Doxyfile.doc
         echo 'GENERATE_MAN = YES' >> Doxyfile.doc
-        echo "PROJECT_NUMBER = $VERSION" >> Doxyfile.doc
+
+#        sed -i -e '/INLINE_INHERITED_MEMB/d' Doxyfile.doc
+#        echo 'INLINE_INHERITED_MEMB = NO' >> Doxyfile.doc
     fi
 
     if [ $GENERATE_QCH -ne 0 ]
     then
-        sed -i -e '/GENERATE_HTMLHELP/d' Doxyfile.doc
-        echo "GENERATE_HTMLHELP = YES" >> Doxyfile.doc
+        sed -i -e '/GENERATE_QHP/d' Doxyfile.doc
+        echo "GENERATE_QHP = YES" >> Doxyfile.doc
     fi
 
     cp ../INSTALL ../COPYING ./
 
-    doxygen Doxyfile.doc > /dev/null
+    doxygen Doxyfile.doc > /dev/null 2>&1
     if [ $? -ne 0 ]
     then
         exit $?
-    fi
-
-    if [ $GENERATE_QCH -ne 0 ]
-    then
-        doxygen2qthelp --namespace=net.sourceforge.qwt-$VERSION --folder=qwt-$VERSION html/index.hhp qwt-$VERSION.qch
-        rm html/index.hh*
     fi
 
     rm Doxyfile.doc Doxygen.log INSTALL COPYING 
@@ -157,7 +164,7 @@ function createDocs {
 
         cd ..
         mkdir pdf
-        mv latex/refman.pdf pdf/qwtdoc.pdf
+        mv latex/refman.pdf pdf/qwtdoc-$VERSION.pdf
 
         rm -r latex 
     fi
@@ -188,7 +195,7 @@ function prepare4Win {
         exit $?
     fi
 
-    rm -r doc/man 
+    rm -rf doc/man 2> /dev/null
 
     # win files, but not uptodate
 
@@ -197,8 +204,9 @@ function prepare4Win {
     SOURCES=`find . -type f -name '*.cpp' -print`
     PROFILES=`find . -type f -name '*.pro' -print`
     PRIFILES=`find . -type f -name '*.pri' -print`
+    PRFFILES=`find . -type f -name '*.prf' -print`
 
-    for FILE in $BATCHES $HEADERS $SOURCES $PROFILES $PRIFILES
+    for FILE in $BATCHES $HEADERS $SOURCES $PROFILES $PRIFILES $PRFFILES
     do
         posix2dos $FILE
     done
@@ -218,8 +226,6 @@ function prepare4Unix {
         exit $?
     fi
 
-    rm -rf admin
-
     cd - > /dev/null
 }
 
@@ -230,10 +236,12 @@ function prepare4Unix {
 QWTDIR=
 SVNDIR=trunk
 BRANCH=qwt
+SUFFIX=
 VERSION=
+GENERATE_DOC=0
 GENERATE_PDF=0
 GENERATE_QCH=0
-GENERATE_MAN=1
+GENERATE_MAN=0
 
 while [ $# -gt 0 ] ; do
     case "$1" in
@@ -241,10 +249,14 @@ while [ $# -gt 0 ] ; do
             usage; exit 1 ;;
         -b|--branch)
             shift; SVNDIR=branches; BRANCH=$1; shift;;
+        -s|--suffix)
+            shift; SUFFIX=$1; shift;;
+        -html)
+            GENERATE_DOC=1; shift;;
         -pdf)
-            GENERATE_PDF=1; shift;;
+            GENERATE_DOC=1; GENERATE_PDF=1; shift;;
         -qch)
-            GENERATE_QCH=1; shift;;
+            GENERATE_DOC=1; GENERATE_QCH=1; shift;;
         *) 
             QWTDIR=qwt-$1 ; VERSION=$1; shift;;
     esac
@@ -256,6 +268,12 @@ then
     exit 2 
 fi
 
+QWTNAME=$QWTDIR
+if [ "$SUFFIX" != "" ]
+then
+    QWTDIR=$QWTDIR-$SUFFIX
+fi
+
 TMPDIR=/tmp/$QWTDIR-tmp
 
 echo -n "checkout to $TMPDIR ... "
@@ -263,13 +281,23 @@ checkoutQwt $SVNDIR $BRANCH $TMPDIR
 cleanQwt $TMPDIR
 echo done
 
-echo -n "generate documentation ... "
-createDocs $TMPDIR/doc
-
-if [ $GENERATE_PDF -ne 0 ]
+if [ $GENERATE_DOC -ne 0 ]
 then
-    mv $TMPDIR/doc/pdf/qwtdoc.pdf $QWTDIR.pdf
-    rmdir $TMPDIR/doc/pdf
+    echo -n "generate documentation ... "
+
+	export VERSION # used in the doxygen files
+    createDocs $TMPDIR/doc
+
+    if [ $GENERATE_PDF -ne 0 ]
+    then
+        mv $TMPDIR/doc/pdf/qwtdoc-$VERSION.pdf $QWTDIR.pdf
+        rmdir $TMPDIR/doc/pdf
+    fi
+
+    if [ $GENERATE_QCH -ne 0 ]
+    then
+        mv $TMPDIR/doc/html/qwtdoc.qch $QWTDIR.qch
+    fi
 fi
 
 echo done
@@ -283,7 +311,6 @@ cd /tmp
 rm -rf $QWTDIR
 cp -a $TMPDIR $QWTDIR
 prepare4Unix $QWTDIR
-tar cfz $QWTDIR.tgz $QWTDIR
 tar cfj $QWTDIR.tar.bz2 $QWTDIR
 
 rm -rf $QWTDIR
@@ -293,7 +320,7 @@ zip -r $QWTDIR.zip $QWTDIR > /dev/null
 
 rm -rf $TMPDIR $QWTDIR
 
-mv $QWTDIR.tgz $QWTDIR.tar.bz2 $QWTDIR.zip $DIR/
+mv $QWTDIR.tar.bz2 $QWTDIR.zip $DIR/
 echo done
 
 exit 0
